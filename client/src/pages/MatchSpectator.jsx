@@ -178,7 +178,6 @@ export default function MatchSpectator() {
           </div>
           <div className="btnRow">
             <button onClick={() => nav("/")}>Home</button>
-            <button onClick={() => nav(`/match/${encodeURIComponent(matchCode)}/umpire`)}>Umpire view</button>
           </div>
         </div>
 

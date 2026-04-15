@@ -9,15 +9,17 @@ export default function ShareMatch() {
 
   const matchCode = String(code || "").toUpperCase();
 
+  const basePath = String(import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+
   const spectatorLink = useMemo(() => {
     const base = window.location.origin;
-    return `${base}/match/${encodeURIComponent(matchCode)}/spectator`;
-  }, [matchCode]);
+    return `${base}${basePath}/match/${encodeURIComponent(matchCode)}/spectator`;
+  }, [matchCode, basePath]);
 
   const umpireLink = useMemo(() => {
     const base = window.location.origin;
-    return `${base}/match/${encodeURIComponent(matchCode)}/toss?key=${encodeURIComponent(key)}`;
-  }, [matchCode, key]);
+    return `${base}${basePath}/match/${encodeURIComponent(matchCode)}/toss?key=${encodeURIComponent(key)}`;
+  }, [matchCode, key, basePath]);
 
   return (
     <div className="container">

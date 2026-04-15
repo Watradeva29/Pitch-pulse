@@ -211,7 +211,6 @@ export default function MatchUmpire() {
         </div>
         <div className="btnRow">
           <button onClick={() => nav("/")}>Home</button>
-          <button onClick={() => nav(`/match/${encodeURIComponent(match.matchId)}/spectator`)}>Open spectator view</button>
         </div>
       </div>
 
@@ -580,18 +579,15 @@ export default function MatchUmpire() {
         <div className="row" style={{ marginTop: 12 }}>
           <div className="card" style={{ flex: "1 1 100%" }}>
             <div className="btnRow tight" style={{ marginBottom: 10 }}>
-              <button disabled={!connected} onClick={() => socket.emit("match:setupTeams", { code: match.matchId, battingTeam: "A" })}>
-                {match.teams.A.name} bats
-              </button>
-              <button disabled={!connected} onClick={() => socket.emit("match:setupTeams", { code: match.matchId, battingTeam: "B" })}>
-                {match.teams.B.name} bats
-              </button>
-              <button className="good" disabled={!connected} onClick={() => socket.emit("match:startInnings1", { code: match.matchId })}>
-                Innings 1
-              </button>
-              <button className="good" disabled={!connected} onClick={() => socket.emit("match:startInnings2", { code: match.matchId })}>
-                Innings 2
-              </button>
+              {match?.innings === 1 && match?.current?.completed ? (
+                <button className="good" disabled={!connected} onClick={() => socket.emit("match:startInnings2", { code: match.matchId })}>
+                  Start innings 2
+                </button>
+              ) : (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Innings and teams are auto-set from the toss. Start innings 2 appears after innings 1 ends.
+                </div>
+              )}
             </div>
 
             <div className="grid2">
