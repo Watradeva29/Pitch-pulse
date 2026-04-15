@@ -8,8 +8,10 @@ export default function Home() {
   return (
     <div className="container">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div>
-          <div className="pill">Pitch Pulse - Scoring app</div>
+        <div style={{ width: "100%", textAlign: "center" }}>
+          <div className="pill" style={{ justifyContent: "center" }}>
+            Pitch Pulse - Scoring app
+          </div>
           <h1 style={{ margin: "10px 0 0" }}>Pitch Pulse</h1>
           <div className="muted" style={{ marginTop: 6 }}>
             Built for gully cricket.
