@@ -135,7 +135,16 @@ function computeMaxWickets(match) {
     return Math.max(0, Number(match.settings?.superOver?.maxWickets ?? 2));
   }
   // wickets possible = players per team - 1 (+ extra wicket rule)
-  let max = Math.max(0, (match.settings.playersPerTeam || 11) - 1);
+  const configured = Number(match.settings?.playersPerTeam || 11);
+  const actualTeamCount = match?.battingTeam ? match?.teams?.[match.battingTeam]?.players?.length : null;
+  const baseCount = Math.max(
+    0,
+    Math.min(
+      Number.isFinite(configured) ? configured : 11,
+      Number.isFinite(actualTeamCount) ? actualTeamCount : configured
+    )
+  );
+  let max = Math.max(0, baseCount - 1);
   const jk = match?.settings?.joker;
   if (jk?.enabled && jk.mode === "oneTeamExtraWicket" && (jk.team === "A" || jk.team === "B")) {
     const other = jk.team === "A" ? "B" : "A";

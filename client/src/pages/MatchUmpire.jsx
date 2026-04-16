@@ -171,6 +171,7 @@ export default function MatchUmpire() {
     if (!st) return true;
     return !st.out;
   });
+  const wicketCandidates = availableBatters.filter((p) => p.id !== current?.strikerId && p.id !== current?.nonStrikerId);
 
   const { overIndex: displayOverIndex, list: overList } = thisOverDeliveries(current);
 
@@ -300,9 +301,7 @@ export default function MatchUmpire() {
                 <label>Next batter</label>
                 <select value={wicketNextBatterId} onChange={(e) => setWicketNextBatterId(e.target.value)}>
                   <option value="">Select</option>
-                  {availableBatters
-                    .filter((p) => p.id !== current?.strikerId && p.id !== current?.nonStrikerId)
-                    .map((p) => (
+                  {wicketCandidates.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
                       </option>
@@ -315,10 +314,15 @@ export default function MatchUmpire() {
               <button onClick={() => setWicketOpen(false)}>Cancel</button>
               <button
                 className="bad"
-                disabled={!connected || !wicketNextBatterId}
+                disabled={!connected || (!wicketNextBatterId && wicketCandidates.length > 0)}
                 onClick={() => {
                   setWicketOpen(false);
-                  sendBall({ kind: "wicket", howOut: wicketHowOut, outPlayerId: current?.strikerId, nextBatterId: wicketNextBatterId });
+                  sendBall({
+                    kind: "wicket",
+                    howOut: wicketHowOut,
+                    outPlayerId: current?.strikerId,
+                    nextBatterId: wicketNextBatterId || null,
+                  });
                 }}
               >
                 Confirm wicket
