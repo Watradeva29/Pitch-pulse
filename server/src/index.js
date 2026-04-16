@@ -181,8 +181,13 @@ io.on("connection", (socket) => {
         return;
       }
       if (match.umpireSocketId && match.umpireSocketId !== socket.id) {
-        socket.emit("match:error", { message: "Umpire already connected." });
-        return;
+        // Seamless handoff: same key can take over (prevents navigation races between pages).
+        const prev = io.sockets.sockets.get(match.umpireSocketId);
+        try {
+          prev?.disconnect(true);
+        } catch {
+          // ignore
+        }
       }
       match.umpireSocketId = socket.id;
       matches.set(c, match);

@@ -151,9 +151,6 @@ export default function Toss() {
           resolve(res);
         });
       });
-      // IMPORTANT: toss page itself holds an umpire socket lock; disconnect before navigating
-      // so the umpire page can join without "Umpire already connected" race.
-      socket.disconnect();
       nav(`/match/${encodeURIComponent(matchCode)}/umpire?key=${encodeURIComponent(key)}`);
     } catch (e) {
       setErr(e?.message || "Failed to continue. Try again.");
