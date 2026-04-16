@@ -77,6 +77,27 @@ select {
   outline: none;
 }
 
+.modalCard h2 {
+  font-size: 20px;
+  letter-spacing: -0.2px;
+}
+
+.modalCard .muted {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.modalCard label {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.modalCard select,
+.modalCard input {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.42);
+}
+
 button {
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.08);

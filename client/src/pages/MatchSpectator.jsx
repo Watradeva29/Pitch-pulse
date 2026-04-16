@@ -91,9 +91,9 @@ export default function MatchSpectator() {
   }, [matchCode]);
 
   useEffect(() => {
-    socket.on("connect", () => setConnected(true));
-    socket.on("disconnect", () => setConnected(false));
-    socket.on("match:update", (m) => {
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+    const onUpdate = (m) => {
       setMatch(m);
       setErr("");
       if (m?.lastBall) {
@@ -102,10 +102,21 @@ export default function MatchSpectator() {
           return next;
         });
       }
-    });
-    socket.on("match:error", (e) => setErr(e?.message || "Socket error"));
+    };
+    const onError = (e) => setErr(e?.message || "Socket error");
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("match:update", onUpdate);
+    socket.on("match:error", onError);
+    socket.connect();
     socket.emit("match:join", { code: matchCode, role: "spectator" });
-    return () => socket.disconnect();
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("match:update", onUpdate);
+      socket.off("match:error", onError);
+      socket.disconnect();
+    };
   }, [socket, matchCode]);
 
   const current = match?.current;

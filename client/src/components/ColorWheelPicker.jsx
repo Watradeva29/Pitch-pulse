@@ -28,6 +28,7 @@ export default function ColorWheelPicker({
 }) {
   const ringRef = useRef(null);
   const squareRef = useRef(null);
+  const lastEmittedRef = useRef("");
 
   const initial = useMemo(() => hexToHsv(value || "#60A5FA"), [value]);
   const [h, setH] = useState(initial.h);
@@ -36,18 +37,25 @@ export default function ColorWheelPicker({
 
   // keep internal HSV in sync if parent changes
   useEffect(() => {
-    const next = hexToHsv(value || "#60A5FA");
+    const valueUpper = String(value || "").toUpperCase();
+    // Avoid feedback-loop: if the parent is just reflecting what we emitted, don't resync.
+    if (valueUpper && valueUpper === outHex) return;
+    const next = hexToHsv(valueUpper || "#60A5FA");
     setH(next.h);
     setS(next.s);
     setV(next.v);
+    lastEmittedRef.current = valueUpper || lastEmittedRef.current;
   }, [value]);
 
   const outHex = useMemo(() => hsvToHex(h, s, v), [h, s, v]);
 
   useEffect(() => {
-    if (typeof onChange === "function" && outHex && outHex !== (value || "").toUpperCase()) {
-      onChange(outHex);
-    }
+    const valueUpper = String(value || "").toUpperCase();
+    if (typeof onChange !== "function" || !outHex) return;
+    if (outHex === valueUpper) return;
+    if (outHex === lastEmittedRef.current) return;
+    lastEmittedRef.current = outHex;
+    onChange(outHex);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [outHex]);
 

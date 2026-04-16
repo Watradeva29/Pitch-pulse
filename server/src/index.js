@@ -225,19 +225,22 @@ io.on("connection", (socket) => {
     emitMatch(c);
   });
 
-  socket.on("match:startInnings1", ({ code }) => {
+  socket.on("match:startInnings1", ({ code }, ack) => {
     const c = String(code || socket.data.code || "").toUpperCase();
     const match = matches.get(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
+      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
     if (socket.data.role !== "umpire") {
       socket.emit("match:error", { message: "Only umpire can control the match." });
+      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
     }
     matches.set(c, startFirstInnings(match));
     emitMatch(c);
+    if (typeof ack === "function") ack({ ok: true });
   });
 
   socket.on("match:startInnings2", ({ code }) => {
@@ -282,6 +285,10 @@ io.on("connection", (socket) => {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       return;
     }
+    if (strikerId && nonStrikerId && strikerId === nonStrikerId) {
+      socket.emit("match:error", { message: "Striker and non-striker cannot be the same player." });
+      return;
+    }
     match.current.strikerId = strikerId || null;
     match.current.nonStrikerId = nonStrikerId || null;
     match.current.bowlerId = bowlerId || null;
@@ -321,15 +328,17 @@ io.on("connection", (socket) => {
     emitMatch(c);
   });
 
-  socket.on("match:toss", ({ code, call, result, decision }) => {
+  socket.on("match:toss", ({ code, call, result, decision }, ack) => {
     const c = String(code || socket.data.code || "").toUpperCase();
     const match = matches.get(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
+      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
     if (socket.data.role !== "umpire") {
       socket.emit("match:error", { message: "Only umpire can control the match." });
+      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
     }
 
@@ -360,6 +369,7 @@ io.on("connection", (socket) => {
 
     matches.set(c, match);
     emitMatch(c);
+    if (typeof ack === "function") ack({ ok: true, winnerTeam, battingTeam: match.battingTeam, bowlingTeam: match.bowlingTeam });
   });
 });
 

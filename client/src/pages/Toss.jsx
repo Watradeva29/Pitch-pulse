@@ -2,9 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createSocket } from "../lib/socket";
 import { getMatch } from "../lib/api";
+import { pickTextColor } from "../lib/colors";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function fairFlip() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const buf = new Uint8Array(1);
+      crypto.getRandomValues(buf);
+      return (buf[0] & 1) === 0 ? "H" : "T";
+    }
+  } catch {
+    // ignore
+  }
+  return Math.random() < 0.5 ? "H" : "T";
 }
 
 export default function Toss() {
@@ -26,6 +40,7 @@ export default function Toss() {
   const [phase, setPhase] = useState("pick"); // pick | flipping | reveal | decision
   const [flipResult, setFlipResult] = useState(null); // H|T
   const [winner, setWinner] = useState(null); // A|B
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -44,17 +59,22 @@ export default function Toss() {
   }, [matchCode]);
 
   useEffect(() => {
-    socket.on("connect", () => setConnected(true));
-    socket.on("disconnect", () => setConnected(false));
-    socket.on("match:update", (m) => {
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+    const onUpdate = (m) => {
       setMatch(m);
       setErr(m?.errors?.[0] || "");
       setAuthOk(true);
-    });
-    socket.on("match:error", (e) => {
+    };
+    const onError = (e) => {
       setErr(e?.message || "Socket error");
       setAuthOk(false);
-    });
+    };
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("match:update", onUpdate);
+    socket.on("match:error", onError);
+    socket.connect();
     if (key) {
       socket.emit("match:join", { code: matchCode, role: "umpire", key });
     } else {
@@ -64,7 +84,13 @@ export default function Toss() {
         setAuthOk(false);
       });
     }
-    return () => socket.disconnect();
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("match:update", onUpdate);
+      socket.off("match:error", onError);
+      socket.disconnect();
+    };
   }, [socket, matchCode, key]);
 
   const a = match?.teams?.A;
@@ -78,7 +104,7 @@ export default function Toss() {
     setWinner(null);
     setFlipResult(null);
 
-    const r = Math.random() < 0.5 ? "H" : "T";
+    const r = fairFlip();
     setFlipResult(r);
 
     // simulate animation time
@@ -92,6 +118,7 @@ export default function Toss() {
   }
 
   async function onChoose(dec) {
+    if (saving) return;
     if (!connected) {
       setErr("Not connected to server yet. Please wait 1–2 seconds and try again.");
       return;
@@ -101,19 +128,43 @@ export default function Toss() {
       return;
     }
     const d = dec === "bowl" ? "bowl" : "bat";
-    socket.emit("match:toss", {
+    setSaving(true);
+    setErr("");
+    const payload = {
       code: matchCode,
       call: { team: callTeam, choice: callChoice },
       result: flipResult || "H",
       decision: d,
-    });
-    // Start innings 1 and go to scoring
-    socket.emit("match:startInnings1", { code: matchCode });
-    nav(`/match/${encodeURIComponent(matchCode)}/umpire?key=${encodeURIComponent(key)}`);
+    };
+    try {
+      await new Promise((resolve, reject) => {
+        socket.timeout(2500).emit("match:toss", payload, (err, res) => {
+          if (err) return reject(new Error("Failed to save toss. Try again."));
+          if (res?.ok === false) return reject(new Error(res.error || "Failed to save toss."));
+          resolve(res);
+        });
+      });
+      await new Promise((resolve, reject) => {
+        socket.timeout(2500).emit("match:startInnings1", { code: matchCode }, (err, res) => {
+          if (err) return reject(new Error("Failed to start innings. Try again."));
+          if (res?.ok === false) return reject(new Error(res.error || "Failed to start innings."));
+          resolve(res);
+        });
+      });
+      // IMPORTANT: toss page itself holds an umpire socket lock; disconnect before navigating
+      // so the umpire page can join without "Umpire already connected" race.
+      socket.disconnect();
+      nav(`/match/${encodeURIComponent(matchCode)}/umpire?key=${encodeURIComponent(key)}`);
+    } catch (e) {
+      setErr(e?.message || "Failed to continue. Try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const winnerName = winner === "B" ? b?.name : a?.name;
   const winnerColor = winner === "B" ? bColor : aColor;
+  const winnerText = pickTextColor(winnerColor);
 
   return (
     <div className="container" style={{ position: "relative" }}>
@@ -123,7 +174,7 @@ export default function Toss() {
             position: "fixed",
             inset: 0,
             background: winnerColor,
-            color: "rgba(0,0,0,0.88)",
+            color: winnerText,
             zIndex: 60,
             display: "flex",
             alignItems: "center",

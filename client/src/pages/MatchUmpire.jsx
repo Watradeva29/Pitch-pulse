@@ -82,17 +82,28 @@ export default function MatchUmpire() {
   }, [matchCode]);
 
   useEffect(() => {
-    socket.on("connect", () => setConnected(true));
-    socket.on("disconnect", () => setConnected(false));
-    socket.on("match:update", (m) => {
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
+    const onUpdate = (m) => {
       setMatch(m);
       setErr(m?.errors?.[0] || "");
-    });
-    socket.on("match:error", (e) => setErr(e?.message || "Socket error"));
+    };
+    const onError = (e) => setErr(e?.message || "Socket error");
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("match:update", onUpdate);
+    socket.on("match:error", onError);
+    socket.connect();
     if (key) {
       socket.emit("match:join", { code: matchCode, role: "umpire", key });
     }
-    return () => socket.disconnect();
+    return () => {
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("match:update", onUpdate);
+      socket.off("match:error", onError);
+      socket.disconnect();
+    };
   }, [socket, matchCode, key]);
 
   const current = match?.current;
@@ -103,11 +114,14 @@ export default function MatchUmpire() {
   const aText = pickTextColor(aColor);
   const bText = pickTextColor(bColor);
 
-  const [showSetup, setShowSetup] = useState(true);
+  const [showSetup, setShowSetup] = useState(false);
   const [wicketOpen, setWicketOpen] = useState(false);
   const [wicketHowOut, setWicketHowOut] = useState("Bowled");
   const [wicketNextBatterId, setWicketNextBatterId] = useState("");
   const [newBowlerId, setNewBowlerId] = useState("");
+  const [pendingStriker, setPendingStriker] = useState("");
+  const [pendingNonStriker, setPendingNonStriker] = useState("");
+  const [pendingBowler, setPendingBowler] = useState("");
 
   const shouldPromptNewBowler =
     match?.status === "live" &&
@@ -122,6 +136,24 @@ export default function MatchUmpire() {
     match?.status === "completed" ||
     match?.status === "tie" ||
     (match?.innings === 2 && match?.current?.completed);
+
+  useEffect(() => {
+    setPendingStriker(current?.strikerId || "");
+    setPendingNonStriker(current?.nonStrikerId || "");
+    setPendingBowler(current?.bowlerId || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchCode, current?.strikerId, current?.nonStrikerId, current?.bowlerId]);
+
+  const needsInitialSelection =
+    match?.status === "live" &&
+    !match?.current?.completed &&
+    Number(match?.current?.legalBalls || 0) === 0 &&
+    (!match?.current?.strikerId || !match?.current?.nonStrikerId || !match?.current?.bowlerId);
+
+  useEffect(() => {
+    // Only show the full selection panel at the start of an innings.
+    setShowSetup(needsInitialSelection);
+  }, [needsInitialSelection]);
 
   if (!match) {
     return (
@@ -198,6 +230,17 @@ export default function MatchUmpire() {
     setWicketOpen(true);
   }
 
+  function applyPlayersSelection() {
+    const strikerId = String(strikerRef.current?.value || "").trim();
+    const nonStrikerId = String(nonStrikerRef.current?.value || "").trim();
+    const bowlerId = String(bowlerRef.current?.value || "").trim();
+    if (strikerId && nonStrikerId && strikerId === nonStrikerId) {
+      setErr("Striker and non-striker cannot be the same player.");
+      return;
+    }
+    socket.emit("match:selectPlayers", { code: match.matchId, strikerId, nonStrikerId, bowlerId });
+  }
+
   return (
     <div className="container">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
@@ -266,7 +309,7 @@ export default function MatchUmpire() {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.55)",
+            background: withAlpha(match?.teams?.[match?.bowlingTeam]?.color || "#000000", 0.92),
             zIndex: 80,
             display: "flex",
             alignItems: "end",
@@ -276,8 +319,15 @@ export default function MatchUmpire() {
           onClick={() => setWicketOpen(false)}
         >
           <div
-            className="card"
-            style={{ width: "100%", maxWidth: 520, borderRadius: 18 }}
+            className="card modalCard"
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              borderRadius: 18,
+              background: "rgba(0,0,0,0.38)",
+              borderColor: "rgba(255,255,255,0.18)",
+              boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             <h2>Wicket</h2>
@@ -464,7 +514,11 @@ export default function MatchUmpire() {
                 ) : null}
               </div>
             </div>
-            <button onClick={() => setShowSetup((v) => !v)}>{showSetup ? "Hide setup" : "Show setup"}</button>
+            {needsInitialSelection ? (
+              <span className="pill" style={{ borderColor: "rgba(96,165,250,0.35)" }}>
+                Pick openers + bowler
+              </span>
+            ) : null}
           </div>
 
           {chase ? (
@@ -597,9 +651,11 @@ export default function MatchUmpire() {
             <div className="grid2">
               <div>
                 <label>Striker</label>
-                <select key={current?.strikerId || "striker"} defaultValue={current?.strikerId || ""} ref={strikerRef}>
+                <select value={pendingStriker} onChange={(e) => setPendingStriker(e.target.value)} ref={strikerRef}>
                   <option value="">Select</option>
-                  {battingPlayers.map((p) => (
+                  {battingPlayers
+                    .filter((p) => !pendingNonStriker || p.id !== pendingNonStriker)
+                    .map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -608,9 +664,11 @@ export default function MatchUmpire() {
               </div>
               <div>
                 <label>Non-striker</label>
-                <select key={current?.nonStrikerId || "non"} defaultValue={current?.nonStrikerId || ""} ref={nonStrikerRef}>
+                <select value={pendingNonStriker} onChange={(e) => setPendingNonStriker(e.target.value)} ref={nonStrikerRef}>
                   <option value="">Select</option>
-                  {battingPlayers.map((p) => (
+                  {battingPlayers
+                    .filter((p) => !pendingStriker || p.id !== pendingStriker)
+                    .map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>
@@ -619,7 +677,7 @@ export default function MatchUmpire() {
               </div>
               <div>
                 <label>Bowler</label>
-                <select key={current?.bowlerId || "bowler"} defaultValue={current?.bowlerId || ""} ref={bowlerRef}>
+                <select value={pendingBowler} onChange={(e) => setPendingBowler(e.target.value)} ref={bowlerRef}>
                   <option value="">Select</option>
                   {bowlingPlayers.map((p) => (
                     <option key={p.id} value={p.id}>
@@ -632,14 +690,7 @@ export default function MatchUmpire() {
                 <button
                   className="primary"
                   disabled={!connected}
-                  onClick={() =>
-                    socket.emit("match:selectPlayers", {
-                      code: match.matchId,
-                      strikerId: strikerRef.current?.value || "",
-                      nonStrikerId: nonStrikerRef.current?.value || "",
-                      bowlerId: bowlerRef.current?.value || "",
-                    })
-                  }
+                  onClick={applyPlayersSelection}
                 >
                   Apply
                 </button>
