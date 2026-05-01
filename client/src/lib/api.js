@@ -7,11 +7,6 @@ function inferApiBase() {
   return "http://localhost:3001";
 }
 
-function basePrefix() {
-  const base = String(import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
-  return base || "";
-}
-
 function sanitizeApiBase(maybeUrl) {
   const raw = String(maybeUrl || "").trim();
   if (!raw) return null;
@@ -28,7 +23,7 @@ function sanitizeApiBase(maybeUrl) {
 
 const API_BASE = import.meta.env.DEV
   ? sanitizeApiBase(import.meta.env.VITE_API_BASE) || inferApiBase()
-  : `${window.location.origin}${basePrefix()}`;
+  : window.location.origin;
 
 export async function createMatch(payload) {
   const res = await fetch(`${API_BASE}/api/matches`, {
