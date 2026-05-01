@@ -7,9 +7,7 @@ export function createSocket() {
       autoConnect: false,
     });
   }
-  const base = String(import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
   return io(window.location.origin, {
-    path: `${base || ""}/socket.io`,
     autoConnect: false,
   });
 }
