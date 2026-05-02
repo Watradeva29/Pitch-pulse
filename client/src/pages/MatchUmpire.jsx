@@ -149,6 +149,7 @@ export default function MatchUmpire() {
     !match?.current?.completed &&
     Number(match?.current?.legalBalls || 0) === 0 &&
     (!match?.current?.strikerId || !match?.current?.nonStrikerId || !match?.current?.bowlerId);
+  const canStartInnings2 = match?.innings === 1 && match?.current?.completed;
 
   useEffect(() => {
     // Only show the full selection panel at the start of an innings.
@@ -633,11 +634,11 @@ export default function MatchUmpire() {
         </div>
       </div>
 
-      {showSetup ? (
+      {showSetup || canStartInnings2 ? (
         <div className="row" style={{ marginTop: 12 }}>
           <div className="card" style={{ flex: "1 1 100%" }}>
             <div className="btnRow tight" style={{ marginBottom: 10 }}>
-              {match?.innings === 1 && match?.current?.completed ? (
+              {canStartInnings2 ? (
                 <button className="good" disabled={!connected} onClick={() => socket.emit("match:startInnings2", { code: match.matchId })}>
                   Start innings 2
                 </button>
@@ -648,54 +649,56 @@ export default function MatchUmpire() {
               )}
             </div>
 
-            <div className="grid2">
-              <div>
-                <label>Striker</label>
-                <select value={pendingStriker} onChange={(e) => setPendingStriker(e.target.value)} ref={strikerRef}>
-                  <option value="">Select</option>
-                  {battingPlayers
-                    .filter((p) => !pendingNonStriker || p.id !== pendingNonStriker)
-                    .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+            {showSetup ? (
+              <div className="grid2">
+                <div>
+                  <label>Striker</label>
+                  <select value={pendingStriker} onChange={(e) => setPendingStriker(e.target.value)} ref={strikerRef}>
+                    <option value="">Select</option>
+                    {battingPlayers
+                      .filter((p) => !pendingNonStriker || p.id !== pendingNonStriker)
+                      .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label>Non-striker</label>
+                  <select value={pendingNonStriker} onChange={(e) => setPendingNonStriker(e.target.value)} ref={nonStrikerRef}>
+                    <option value="">Select</option>
+                    {battingPlayers
+                      .filter((p) => !pendingStriker || p.id !== pendingStriker)
+                      .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label>Bowler</label>
+                  <select value={pendingBowler} onChange={(e) => setPendingBowler(e.target.value)} ref={bowlerRef}>
+                    <option value="">Select</option>
+                    {bowlingPlayers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ display: "flex", alignItems: "end" }}>
+                  <button
+                    className="primary"
+                    disabled={!connected}
+                    onClick={applyPlayersSelection}
+                  >
+                    Apply
+                  </button>
+                </div>
               </div>
-              <div>
-                <label>Non-striker</label>
-                <select value={pendingNonStriker} onChange={(e) => setPendingNonStriker(e.target.value)} ref={nonStrikerRef}>
-                  <option value="">Select</option>
-                  {battingPlayers
-                    .filter((p) => !pendingStriker || p.id !== pendingStriker)
-                    .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label>Bowler</label>
-                <select value={pendingBowler} onChange={(e) => setPendingBowler(e.target.value)} ref={bowlerRef}>
-                  <option value="">Select</option>
-                  {bowlingPlayers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ display: "flex", alignItems: "end" }}>
-                <button
-                  className="primary"
-                  disabled={!connected}
-                  onClick={applyPlayersSelection}
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
+            ) : null}
           </div>
         </div>
       ) : null}
