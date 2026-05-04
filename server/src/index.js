@@ -15,6 +15,7 @@ const {
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
+const BASE_PATH = normalizeBasePath(process.env.BASE_PATH ?? "/pitchpulse");
 
 // Dev-friendly CORS: reflect the request origin.
 // For production, set CLIENT_ORIGIN explicitly and lock it down.
@@ -30,9 +31,7 @@ app.use(
 );
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: corsOptions,
-});
+const ioServers = createSocketServers(server);
 
 // In-memory store: matchCode -> match object
 const matches = new Map();
@@ -83,6 +82,12 @@ function publicMatch(match) {
   return rest;
 }
 
+function normalizeBasePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "/") return "";
+  return `/${raw.replace(/^\/+|\/+$/g, "")}`;
+}
+
 function mustGetMatch(code) {
   const match = matches.get(code);
   if (!match) {
@@ -96,108 +101,140 @@ function mustGetMatch(code) {
 function emitMatch(code) {
   const match = matches.get(code);
   if (!match) return;
-  io.to(`match:${code}`).emit("match:update", publicMatch(match));
+  for (const io of ioServers) {
+    io.to(`match:${code}`).emit("match:update", publicMatch(match));
+  }
 }
 
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+function findSocket(socketId) {
+  for (const io of ioServers) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (socket) return socket;
+  }
+  return null;
+}
 
-app.post("/api/matches", (req, res) => {
-  const {
-    teamAName,
-    teamBName,
-    teamAColor,
-    teamBColor,
-    teamAPlayers,
-    teamBPlayers,
-    playersPerTeam = 11,
-    overs,
-    joker, // { mode, team, name }
-    rules,
-  } = req.body || {};
+function mountApiRoutes() {
+  const api = express.Router();
 
-  const pCount = Math.max(3, Math.min(11, Number(playersPerTeam || 11)));
-  const maxOvers = Math.max(1, Number(overs || pCount));
+  api.get("/health", (req, res) => res.json({ ok: true }));
 
-  const code = createCode();
-  const matchId = code;
-  const umpireKey = createUmpireKey();
+  api.post("/matches", (req, res) => {
+    const {
+      teamAName,
+      teamBName,
+      teamAColor,
+      teamBColor,
+      teamAPlayers,
+      teamBPlayers,
+      playersPerTeam = 11,
+      overs,
+      joker, // { mode, team, name }
+      rules,
+    } = req.body || {};
 
-  const baseAPlayers = pickPlayers(teamAPlayers);
-  const baseBPlayers = pickPlayers(teamBPlayers);
-  const { teamAPlayers: finalAPlayers, teamBPlayers: finalBPlayers, joker: jokerCfg } = addJoker(
-    baseAPlayers,
-    baseBPlayers,
-    joker
-  );
+    const pCount = Math.max(3, Math.min(11, Number(playersPerTeam || 11)));
+    const maxOvers = Math.max(1, Number(overs || pCount));
 
-  const match = newMatchState({
-    matchId,
-    teamAName: String(teamAName || "Team A"),
-    teamBName: String(teamBName || "Team B"),
-    teamAColor: String(teamAColor || "#60A5FA"),
-    teamBColor: String(teamBColor || "#F59E0B"),
-    teamAPlayers: finalAPlayers,
-    teamBPlayers: finalBPlayers,
-    playersPerTeam: pCount,
-    maxOvers,
-    joker: jokerCfg,
-    rules,
+    const code = createCode();
+    const matchId = code;
+    const umpireKey = createUmpireKey();
+
+    const baseAPlayers = pickPlayers(teamAPlayers);
+    const baseBPlayers = pickPlayers(teamBPlayers);
+    const { teamAPlayers: finalAPlayers, teamBPlayers: finalBPlayers, joker: jokerCfg } = addJoker(
+      baseAPlayers,
+      baseBPlayers,
+      joker
+    );
+
+    const match = newMatchState({
+      matchId,
+      teamAName: String(teamAName || "Team A"),
+      teamBName: String(teamBName || "Team B"),
+      teamAColor: String(teamAColor || "#60A5FA"),
+      teamBColor: String(teamBColor || "#F59E0B"),
+      teamAPlayers: finalAPlayers,
+      teamBPlayers: finalBPlayers,
+      playersPerTeam: pCount,
+      maxOvers,
+      joker: jokerCfg,
+      rules,
+    });
+
+    match.umpireKey = umpireKey;
+    match.umpireSocketId = null; // lock to a single active umpire socket
+
+    matches.set(code, match);
+    res.json({ code, match: publicMatch(match), umpireKey });
   });
 
-  match.umpireKey = umpireKey;
-  match.umpireSocketId = null; // lock to a single active umpire socket
-
-  matches.set(code, match);
-  res.json({ code, match: publicMatch(match), umpireKey });
-});
-
-app.get("/api/matches/:code", (req, res, next) => {
-  try {
-    const match = mustGetMatch(String(req.params.code || "").toUpperCase());
-    res.json({ match: publicMatch(match) });
-  } catch (e) {
-    next(e);
-  }
-});
-
-app.use((err, req, res, next) => {
-  const status = err.status || 500;
-  res.status(status).json({ error: err.message || "Server error" });
-});
-
-io.on("connection", (socket) => {
-  socket.on("match:join", ({ code, role, key }) => {
-    const c = String(code || "").toUpperCase();
-    if (!matches.has(c)) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
+  api.get("/matches/:code", (req, res, next) => {
+    try {
+      const match = mustGetMatch(String(req.params.code || "").toUpperCase());
+      res.json({ match: publicMatch(match) });
+    } catch (e) {
+      next(e);
     }
-    const match = matches.get(c);
-    const r = role === "umpire" ? "umpire" : "spectator";
+  });
 
-    if (r === "umpire") {
-      if (!key || key !== match.umpireKey) {
-        socket.emit("match:error", { message: "Umpire access denied." });
+  app.use("/api", api);
+  if (BASE_PATH) {
+    app.use(`${BASE_PATH}/api`, api);
+  }
+}
+
+function createSocketServers(server) {
+  const paths = ["/socket.io"];
+  if (BASE_PATH) {
+    paths.push(`${BASE_PATH}/socket.io`);
+  }
+
+  return paths.map(
+    (path) =>
+      new Server(server, {
+        cors: corsOptions,
+        path,
+      })
+  );
+}
+
+mountApiRoutes();
+
+function registerSocketHandlers(io) {
+  io.on("connection", (socket) => {
+    socket.on("match:join", ({ code, role, key }) => {
+      const c = String(code || "").toUpperCase();
+      if (!matches.has(c)) {
+        socket.emit("match:error", { message: "Match not found." });
         return;
       }
-      if (match.umpireSocketId && match.umpireSocketId !== socket.id) {
-        // Seamless handoff: same key can take over (prevents navigation races between pages).
-        const prev = io.sockets.sockets.get(match.umpireSocketId);
-        try {
-          prev?.disconnect(true);
-        } catch {
-          // ignore
-        }
-      }
-      match.umpireSocketId = socket.id;
-      matches.set(c, match);
-    }
+      const match = matches.get(c);
+      const r = role === "umpire" ? "umpire" : "spectator";
 
-    socket.data.code = c;
-    socket.data.role = r;
-    socket.join(`match:${c}`);
-    socket.emit("match:update", publicMatch(matches.get(c)));
-  });
+      if (r === "umpire") {
+        if (!key || key !== match.umpireKey) {
+          socket.emit("match:error", { message: "Umpire access denied." });
+          return;
+        }
+        if (match.umpireSocketId && match.umpireSocketId !== socket.id) {
+          // Seamless handoff: same key can take over (prevents navigation races between pages).
+          const prev = findSocket(match.umpireSocketId);
+          try {
+            prev?.disconnect(true);
+          } catch {
+            // ignore
+          }
+        }
+        match.umpireSocketId = socket.id;
+        matches.set(c, match);
+      }
+
+      socket.data.code = c;
+      socket.data.role = r;
+      socket.join(`match:${c}`);
+      socket.emit("match:update", publicMatch(matches.get(c)));
+    });
 
   socket.on("disconnect", () => {
     const c = socket.data.code;
@@ -376,10 +413,21 @@ io.on("connection", (socket) => {
     emitMatch(c);
     if (typeof ack === "function") ack({ ok: true, winnerTeam, battingTeam: match.battingTeam, bowlingTeam: match.bowlingTeam });
   });
+  });
+}
+
+for (const io of ioServers) {
+  registerSocketHandlers(io);
+}
+
+app.use((err, req, res, next) => {
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || "Server error" });
 });
 
 server.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
+  console.log(`Base path: ${BASE_PATH || "/"}`);
   console.log(`CORS origin: ${CLIENT_ORIGIN}`);
 });
 
