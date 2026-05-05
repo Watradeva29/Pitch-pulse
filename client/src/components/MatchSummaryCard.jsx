@@ -59,7 +59,7 @@ function InningsBlock({ label, color, textColor, allPlayers, inn }) {
     <div style={{ border: `1px solid ${withAlpha(color, 0.45)}`, borderRadius: 14, overflow: "hidden" }}>
       <div
         style={{
-          background: `linear-gradient(90deg, ${withAlpha(color, 0.95)}, ${withAlpha(color, 0.55)})`,
+          background: withAlpha(color, 0.18),
           color: textColor,
           padding: "10px 12px",
           display: "flex",

@@ -49,7 +49,12 @@ function ballLabel(b) {
   if (b.kind === "run") return String(b.runs);
   if (b.kind === "wide") return "Wd";
   if (b.kind === "noBall") return "Nb";
-  if (b.kind === "wicket") return "W";
+  if (b.kind === "wicket") {
+    const rc = Number(b?.wicket?.runsCompleted || 0);
+    const isRunOut = String(b?.wicket?.kind || "") === "run_out";
+    if (isRunOut && rc > 0) return `W+${rc}`;
+    return "W";
+  }
   return "•";
 }
 
@@ -531,14 +536,22 @@ export default function MatchUmpire() {
 
             {wicketHowOut === "Run out" ? (
               <div style={{ marginTop: 10 }}>
-                <label>Runs completed (0–4)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={4}
-                  value={wicketRunsCompleted}
-                  onChange={(e) => setWicketRunsCompleted(Number(e.target.value || 0))}
-                />
+                <div className="muted" style={{ fontSize: 12, fontWeight: 900, letterSpacing: 0.2, marginBottom: 8 }}>
+                  Runs completed
+                </div>
+                <div className="btnGrid" style={{ gridTemplateColumns: "repeat(5, minmax(0, 1fr))" }}>
+                  {[0, 1, 2, 3, 4].map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className={Number(wicketRunsCompleted) === r ? "primary" : ""}
+                      onClick={() => setWicketRunsCompleted(r)}
+                      disabled={!connected}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
                 <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
                   Use this when they were running and got out after completing runs (e.g. 1 + W).
                 </div>

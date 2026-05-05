@@ -64,6 +64,13 @@ export default function SetupMatch() {
 
   const maxOversNum = Math.max(1, Math.min(99, Number(overs) || 1));
   const [bowlerMaxOvers, setBowlerMaxOvers] = useState("");
+  const pCountNum = Math.max(3, Math.min(11, Number(playersPerTeam) || 11));
+  const bmoNum = Math.floor(Number(bowlerMaxOvers));
+  const bowlerCapValid =
+    Number.isFinite(bmoNum) &&
+    bmoNum >= 1 &&
+    bmoNum <= maxOversNum &&
+    pCountNum * bmoNum >= maxOversNum;
 
   const teamAPlayers = useMemo(() => splitLines(teamAPlayersText), [teamAPlayersText]);
   const teamBPlayers = useMemo(() => splitLines(teamBPlayersText), [teamBPlayersText]);
@@ -245,8 +252,15 @@ export default function SetupMatch() {
               style={{ marginTop: 8 }}
             />
             <div className="muted" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
-              Required — enter the limit your group agrees on (whole number from 1 to {maxOversNum} overs per bowler, per innings). No default is filled in.
+              Required — enter the limit your group agrees on (whole number 1 to {maxOversNum}).
+              Also ensure it’s possible to finish the innings:{" "}
+              <b>{pCountNum}</b> players × <b>max overs per bowler</b> must be ≥ <b>{maxOversNum}</b> overs.
             </div>
+            {!bowlerCapValid && bowlerMaxOvers !== "" ? (
+              <div className="error" style={{ marginTop: 10 }}>
+                Invalid: must be 1–{maxOversNum}, and {pCountNum} × max overs per bowler must be ≥ {maxOversNum}.
+              </div>
+            ) : null}
           </div>
           <div className="btnRow">
             <button className={wideExtraBall ? "primary" : ""} onClick={() => setWideExtraBall((v) => !v)}>
@@ -271,7 +285,7 @@ export default function SetupMatch() {
             style={{
               borderRadius: 12,
               padding: "10px 12px",
-              background: `linear-gradient(180deg, ${withAlpha(teamAColor, 0.35)} 0%, rgba(0,0,0,0) 100%)`,
+              background: withAlpha(teamAColor, 0.18),
               border: `1px solid ${withAlpha(teamAColor, 0.35)}`,
               marginBottom: 12,
               color: teamAText,
@@ -304,7 +318,7 @@ export default function SetupMatch() {
               padding: 10,
               borderRadius: 10,
               border: `1px solid ${withAlpha(teamAColor, 0.35)}`,
-              background: `linear-gradient(180deg, ${withAlpha(teamAColor, 0.14)} 0%, rgba(0,0,0,0.25) 55%)`,
+              background: "rgba(0,0,0,0.25)",
               color: "var(--text)",
             }}
           />
@@ -318,7 +332,7 @@ export default function SetupMatch() {
             style={{
               borderRadius: 12,
               padding: "10px 12px",
-              background: `linear-gradient(180deg, ${withAlpha(teamBColor, 0.35)} 0%, rgba(0,0,0,0) 100%)`,
+              background: withAlpha(teamBColor, 0.18),
               border: `1px solid ${withAlpha(teamBColor, 0.35)}`,
               marginBottom: 12,
               color: teamBText,
@@ -351,7 +365,7 @@ export default function SetupMatch() {
               padding: 10,
               borderRadius: 10,
               border: `1px solid ${withAlpha(teamBColor, 0.35)}`,
-              background: `linear-gradient(180deg, ${withAlpha(teamBColor, 0.14)} 0%, rgba(0,0,0,0.25) 55%)`,
+              background: "rgba(0,0,0,0.25)",
               color: "var(--text)",
             }}
           />
@@ -371,9 +385,7 @@ export default function SetupMatch() {
               className="primary"
               disabled={
                 busy ||
-                !Number.isFinite(Number(bowlerMaxOvers)) ||
-                Math.floor(Number(bowlerMaxOvers)) < 1 ||
-                Math.floor(Number(bowlerMaxOvers)) > maxOversNum
+                !bowlerCapValid
               }
               onClick={onCreate}
             >

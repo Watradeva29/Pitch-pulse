@@ -49,7 +49,12 @@ function lastBallsLabel(ball) {
   if (ball.kind === "run") return String(ball.runs);
   if (ball.kind === "wide") return "Wd";
   if (ball.kind === "noBall") return "Nb";
-  if (ball.kind === "wicket") return "W";
+  if (ball.kind === "wicket") {
+    const rc = Number(ball?.wicket?.runsCompleted || 0);
+    const isRunOut = String(ball?.wicket?.kind || "") === "run_out";
+    if (isRunOut && rc > 0) return `W+${rc}`;
+    return "W";
+  }
   return "•";
 }
 
@@ -532,14 +537,14 @@ export default function MatchSpectator() {
             style={{
               borderRadius: 12,
               padding: "10px 12px",
-              background: `linear-gradient(90deg, ${withAlpha(batColor, 0.35)} 0%, rgba(0,0,0,0) 65%)`,
-              border: `1px solid ${withAlpha(batColor, 0.35)}`,
+              background: withAlpha(batColor, 0.14),
+              border: `1px solid ${withAlpha(batColor, 0.40)}`,
               color: batText,
               fontWeight: 900,
               marginBottom: 10,
             }}
           >
-            Batsmen ({batTeam?.name || "—"})
+            Batsmen
           </div>
           {tab === "live" ? <div style={{ display: "grid", gap: 10 }}>
             {[
@@ -601,14 +606,14 @@ export default function MatchSpectator() {
             style={{
               borderRadius: 12,
               padding: "10px 12px",
-              background: `linear-gradient(90deg, ${withAlpha(bowlColor, 0.35)} 0%, rgba(0,0,0,0) 65%)`,
-              border: `1px solid ${withAlpha(bowlColor, 0.35)}`,
+              background: withAlpha(bowlColor, 0.14),
+              border: `1px solid ${withAlpha(bowlColor, 0.40)}`,
               color: bowlText,
               fontWeight: 900,
               marginBottom: 10,
             }}
           >
-            Bowler ({bowlTeam?.name || "—"})
+            Bowler
           </div>
           <div className="muted" style={{ marginBottom: 8 }}>
             <b>{findPlayerName(match, current?.bowlerId) || "—"}</b>

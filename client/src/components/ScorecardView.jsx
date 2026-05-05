@@ -62,6 +62,37 @@ function asArray(obj) {
   return Object.values(obj);
 }
 
+function findWicketDelivery(inn, outPlayerId) {
+  const id = String(outPlayerId || "");
+  if (!id) return null;
+  const deliveries = Array.isArray(inn?.deliveries) ? inn.deliveries : [];
+  for (let i = deliveries.length - 1; i >= 0; i -= 1) {
+    const d = deliveries[i];
+    if (d?.kind === "wicket" && String(d?.wicket?.outPlayerId || "") === id) return d;
+  }
+  return null;
+}
+
+function formatDismissal(inn, allPlayers, batter) {
+  if (!batter?.out) return "Not out";
+  const d = findWicketDelivery(inn, batter.playerId);
+  const kind = String(d?.wicket?.kind || "").trim();
+  const bowler = playerName(allPlayers, d?.wicket?.bowlerId || d?.bowlerId) || "";
+  const fielder = playerName(allPlayers, d?.wicket?.fielderId) || "";
+  const rc = Number(d?.wicket?.runsCompleted || 0);
+
+  if (kind === "bowled") return bowler ? `b ${bowler}` : "b";
+  if (kind === "caught") return bowler ? `c ${fielder || "—"} b ${bowler}` : `c ${fielder || "—"}`;
+  if (kind === "lbw") return bowler ? `lbw b ${bowler}` : "lbw";
+  if (kind === "stumped") return bowler ? `st ${fielder || "—"} b ${bowler}` : `st ${fielder || "—"}`;
+  if (kind === "hit_wicket") return bowler ? `hit wicket b ${bowler}` : "hit wicket";
+  if (kind === "run_out") return `run out (${fielder || "—"})${rc > 0 ? ` +${rc}` : ""}`;
+
+  // Fallback to stored label if present
+  const raw = String(batter?.howOut || "").trim();
+  return raw || "Out";
+}
+
 function ResultBanner({ match }) {
   if (!match) return null;
   if (match.status !== "completed" && match.status !== "tie") return null;
@@ -179,7 +210,7 @@ function InningsCard({ title, match, batTeamKey, bowlTeamKey, inn }) {
                     <tr key={b.playerId} style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
                       <td style={{ padding: "8px 6px", fontWeight: 700 }}>{playerName(allPlayers, b.playerId) || "—"}</td>
                       <td style={{ padding: "8px 6px" }} className="muted">
-                        {b.out ? b.howOut || "Out" : "Not out"}
+                        {formatDismissal(inn, allPlayers, b)}
                       </td>
                       <td style={{ padding: "8px 6px" }} className="mono">
                         {b.runs ?? 0}
@@ -285,16 +316,24 @@ export default function ScorecardView({ match }) {
 
   const base = match?.superOver?.base;
 
-  const mainInnings1 = base?.innings1 || (match.innings === 2 || match.status !== "setup" ? match.previous : null);
-  const mainInnings2 = base?.innings2 || (match.innings === 2 || match.status !== "setup" ? match.current : null);
+  const mainInnings1 =
+    base?.innings1 ||
+    (match.innings === 2 ? match.previous : match.innings === 1 ? match.current : match.previous);
+  const mainInnings2 =
+    base?.innings2 ||
+    (match.innings === 2
+      ? match.current
+      : match.innings === 1 && match.current?.completed
+        ? match.current
+        : null);
 
-  // For main match team keys: innings 1 battingTeam/bowlingTeam are from the match at that time.
-  // If we have base, we don't store those keys; we can infer from the fact that at start of innings 2 teams swap.
-  // So for main match, use current match keys + swap back for innings 1 if needed.
-  const inn2Bat = match.battingTeam;
-  const inn2Bowl = match.bowlingTeam;
-  const inn1Bat = inn2Bowl;
-  const inn1Bowl = inn2Bat;
+  // Team keys depend on whether the match has started innings 2 yet.
+  // - During innings 1: match.battingTeam/bowlingTeam refer to innings 1.
+  // - During innings 2: match.battingTeam/bowlingTeam refer to innings 2 (teams were swapped on start).
+  const inn1Bat = match.innings === 1 ? match.battingTeam : match.bowlingTeam;
+  const inn1Bowl = match.innings === 1 ? match.bowlingTeam : match.battingTeam;
+  const inn2Bat = match.innings === 1 ? match.bowlingTeam : match.battingTeam;
+  const inn2Bowl = match.innings === 1 ? match.battingTeam : match.bowlingTeam;
 
   // Super Over: infer team keys the same way (innings 2 swaps teams).
   const soInnings1 = match?.superOver?.active ? (match.innings === 2 ? match.previous : match.current) : null;
@@ -320,8 +359,22 @@ export default function ScorecardView({ match }) {
         </div>
       ) : null}
 
-      <InningsCard title={base ? "Main match — Innings 1" : inningsLabel(match, 1)} match={match} batTeamKey={inn1Bat} bowlTeamKey={inn1Bowl} inn={mainInnings1} />
-      <InningsCard title={base ? "Main match — Innings 2" : inningsLabel(match, 2)} match={match} batTeamKey={inn2Bat} bowlTeamKey={inn2Bowl} inn={mainInnings2} />
+      <InningsCard
+        title={base ? "Main match — Innings 1" : inningsLabel(match, 1)}
+        match={match}
+        batTeamKey={inn1Bat}
+        bowlTeamKey={inn1Bowl}
+        inn={mainInnings1}
+      />
+      {mainInnings2 ? (
+        <InningsCard
+          title={base ? "Main match — Innings 2" : inningsLabel(match, 2)}
+          match={match}
+          batTeamKey={inn2Bat}
+          bowlTeamKey={inn2Bowl}
+          inn={mainInnings2}
+        />
+      ) : null}
 
       {match?.superOver?.active ? (
         <>

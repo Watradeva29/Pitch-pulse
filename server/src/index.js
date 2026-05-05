@@ -147,6 +147,12 @@ app.post("/api/matches", async (req, res, next) => {
       res.status(400).json({ error: `Max overs per bowler cannot exceed the innings length (${maxOvers}).` });
       return;
     }
+    if (pCount * bmo < maxOvers) {
+      res.status(400).json({
+        error: `Bowler limit is too low to complete ${maxOvers} overs. Need playersPerTeam × bowlerMaxOvers ≥ overs (${pCount} × ${bmo} < ${maxOvers}).`,
+      });
+      return;
+    }
 
     const code = createCode();
     const matchId = code;

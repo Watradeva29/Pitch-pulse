@@ -34,6 +34,36 @@ function econ(runsConceded, legalBalls) {
   return (Number(runsConceded || 0) / overs).toFixed(2);
 }
 
+function findWicketDelivery(inn, outPlayerId) {
+  const id = String(outPlayerId || "");
+  if (!id) return null;
+  const deliveries = Array.isArray(inn?.deliveries) ? inn.deliveries : [];
+  for (let i = deliveries.length - 1; i >= 0; i -= 1) {
+    const d = deliveries[i];
+    if (d?.kind === "wicket" && String(d?.wicket?.outPlayerId || "") === id) return d;
+  }
+  return null;
+}
+
+function formatDismissal(inn, allPlayers, batter) {
+  if (!batter?.out) return "not out";
+  const d = findWicketDelivery(inn, batter.playerId);
+  const kind = String(d?.wicket?.kind || "").trim();
+  const bowler = nameOf(allPlayers, d?.wicket?.bowlerId || d?.bowlerId) || "";
+  const fielder = nameOf(allPlayers, d?.wicket?.fielderId) || "";
+  const rc = Number(d?.wicket?.runsCompleted || 0);
+
+  if (kind === "bowled") return bowler ? `b ${bowler}` : "b";
+  if (kind === "caught") return bowler ? `c ${fielder || "—"} b ${bowler}` : `c ${fielder || "—"}`;
+  if (kind === "lbw") return bowler ? `lbw b ${bowler}` : "lbw";
+  if (kind === "stumped") return bowler ? `st ${fielder || "—"} b ${bowler}` : `st ${fielder || "—"}`;
+  if (kind === "hit_wicket") return bowler ? `hit wicket b ${bowler}` : "hit wicket";
+  if (kind === "run_out") return `run out (${fielder || "—"})${rc > 0 ? ` +${rc}` : ""}`;
+
+  const raw = String(batter?.howOut || "").trim();
+  return raw || "Out";
+}
+
 function computeTimeline(allPlayers, deliveries) {
   let total = 0;
   let legalBalls = 0;
@@ -169,7 +199,7 @@ const InningsPdfPage = forwardRef(function InningsPdfPage({ match, inningsLabel,
 
   const battingRows = batting.map((b) => [
     nameOf(allPlayers, b.playerId) || "—",
-    b.out ? b.howOut || "Out" : "not out",
+    formatDismissal(inn, allPlayers, b),
     <span className="mono" key="r">{b.runs ?? 0}</span>,
     <span className="mono" key="b">{b.balls ?? 0}</span>,
     <span className="mono" key="4">{b.fours ?? 0}</span>,
