@@ -62,6 +62,9 @@ export default function SetupMatch() {
   const [noBallExtraBall, setNoBallExtraBall] = useState(true);
   const [freeHit, setFreeHit] = useState(true);
 
+  const maxOversNum = Math.max(1, Math.min(99, Number(overs) || 1));
+  const [bowlerMaxOvers, setBowlerMaxOvers] = useState("");
+
   const teamAPlayers = useMemo(() => splitLines(teamAPlayersText), [teamAPlayersText]);
   const teamBPlayers = useMemo(() => splitLines(teamBPlayersText), [teamBPlayersText]);
 
@@ -107,6 +110,7 @@ export default function SetupMatch() {
           wide: { extraBall: !!wideExtraBall },
           noBall: { extraBall: !!noBallExtraBall, freeHit: !!freeHit },
         },
+        bowlerMaxOvers: Math.floor(Number(bowlerMaxOvers)),
       };
       const res = await createMatch(payload);
       nav(`/match/${encodeURIComponent(res.code)}/share?key=${encodeURIComponent(res.umpireKey || "")}`);
@@ -217,6 +221,33 @@ export default function SetupMatch() {
 
         <div className="card" style={{ flex: "1 1 520px" }}>
           <h2>Rules</h2>
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 12,
+              borderRadius: 12,
+              border: "2px solid rgba(96, 165, 250, 0.45)",
+              background: "rgba(96, 165, 250, 0.08)",
+            }}
+          >
+            <label style={{ fontWeight: 900, letterSpacing: 0.2 }}>
+              Max overs per bowler <span style={{ color: "#fecaca" }}>*</span>
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={maxOversNum}
+              step={1}
+              required
+              value={bowlerMaxOvers}
+              placeholder={`1–${maxOversNum}`}
+              onChange={(e) => setBowlerMaxOvers(e.target.value)}
+              style={{ marginTop: 8 }}
+            />
+            <div className="muted" style={{ marginTop: 8, fontSize: 12, lineHeight: 1.45 }}>
+              Required — enter the limit your group agrees on (whole number from 1 to {maxOversNum} overs per bowler, per innings). No default is filled in.
+            </div>
+          </div>
           <div className="btnRow">
             <button className={wideExtraBall ? "primary" : ""} onClick={() => setWideExtraBall((v) => !v)}>
               Wide extra ball: {wideExtraBall ? "ON" : "OFF"}
@@ -336,7 +367,16 @@ export default function SetupMatch() {
             <div className="muted">
               This creates the match and opens the umpire screen.
             </div>
-            <button className="primary" disabled={busy} onClick={onCreate}>
+            <button
+              className="primary"
+              disabled={
+                busy ||
+                !Number.isFinite(Number(bowlerMaxOvers)) ||
+                Math.floor(Number(bowlerMaxOvers)) < 1 ||
+                Math.floor(Number(bowlerMaxOvers)) > maxOversNum
+              }
+              onClick={onCreate}
+            >
               {busy ? "Creating..." : "Create match"}
             </button>
           </div>

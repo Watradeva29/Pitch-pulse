@@ -1,3 +1,6 @@
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+
 const http = require("http");
 const express = require("express");
 const cors = require("cors");
@@ -11,7 +14,20 @@ const {
   startFirstInnings,
   startSecondInnings,
   startSuperOver,
+  newInningsState,
+  bowlerHasQuotaRemaining,
 } = require("./match/scoring");
+
+const {
+  initMongo,
+  closeMongo,
+  getMongoDiagnostics,
+  createMatch,
+  getMatch,
+  saveMatch,
+  hasMatch,
+  listRecentMatchSummariesForApi,
+} = require("./store/matches");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -33,9 +49,6 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: corsOptions,
 });
-
-// In-memory store: matchCode -> match object
-const matches = new Map();
 
 function createCode() {
   return nanoid(6).toUpperCase();
@@ -83,8 +96,8 @@ function publicMatch(match) {
   return rest;
 }
 
-function mustGetMatch(code) {
-  const match = matches.get(code);
+async function mustGetMatch(code) {
+  const match = await getMatch(code);
   if (!match) {
     const err = new Error("Match not found.");
     err.status = 404;
@@ -93,15 +106,21 @@ function mustGetMatch(code) {
   return match;
 }
 
-function emitMatch(code) {
-  const match = matches.get(code);
+function emitMatch(code, match) {
   if (!match) return;
   io.to(`match:${code}`).emit("match:update", publicMatch(match));
 }
 
-app.get("/api/health", (req, res) => res.json({ ok: true }));
+app.get("/api/health", async (req, res) => {
+  const mongo = await getMongoDiagnostics().catch((e) => ({
+    configured: false,
+    connected: false,
+    error: e?.message || String(e),
+  }));
+  res.json({ ok: true, mongo });
+});
 
-app.post("/api/matches", (req, res) => {
+app.post("/api/matches", async (req, res, next) => {
   const {
     teamAName,
     teamBName,
@@ -111,50 +130,75 @@ app.post("/api/matches", (req, res) => {
     teamBPlayers,
     playersPerTeam = 11,
     overs,
+    bowlerMaxOvers,
     joker, // { mode, team, name }
     rules,
   } = req.body || {};
 
-  const pCount = Math.max(3, Math.min(11, Number(playersPerTeam || 11)));
-  const maxOvers = Math.max(1, Number(overs || pCount));
+  try {
+    const pCount = Math.max(3, Math.min(11, Number(playersPerTeam || 11)));
+    const maxOvers = Math.max(1, Number(overs || pCount));
+    const bmo = Math.floor(Number(bowlerMaxOvers));
+    if (!Number.isFinite(bmo) || bmo < 1) {
+      res.status(400).json({ error: "Set max overs per bowler (whole number, at least 1)." });
+      return;
+    }
+    if (bmo > maxOvers) {
+      res.status(400).json({ error: `Max overs per bowler cannot exceed the innings length (${maxOvers}).` });
+      return;
+    }
 
-  const code = createCode();
-  const matchId = code;
-  const umpireKey = createUmpireKey();
+    const code = createCode();
+    const matchId = code;
+    const umpireKey = createUmpireKey();
 
-  const baseAPlayers = pickPlayers(teamAPlayers);
-  const baseBPlayers = pickPlayers(teamBPlayers);
-  const { teamAPlayers: finalAPlayers, teamBPlayers: finalBPlayers, joker: jokerCfg } = addJoker(
-    baseAPlayers,
-    baseBPlayers,
-    joker
-  );
+    const baseAPlayers = pickPlayers(teamAPlayers);
+    const baseBPlayers = pickPlayers(teamBPlayers);
+    const { teamAPlayers: finalAPlayers, teamBPlayers: finalBPlayers, joker: jokerCfg } = addJoker(
+      baseAPlayers,
+      baseBPlayers,
+      joker
+    );
 
-  const match = newMatchState({
-    matchId,
-    teamAName: String(teamAName || "Team A"),
-    teamBName: String(teamBName || "Team B"),
-    teamAColor: String(teamAColor || "#60A5FA"),
-    teamBColor: String(teamBColor || "#F59E0B"),
-    teamAPlayers: finalAPlayers,
-    teamBPlayers: finalBPlayers,
-    playersPerTeam: pCount,
-    maxOvers,
-    joker: jokerCfg,
-    rules,
-  });
+    const match = newMatchState({
+      matchId,
+      teamAName: String(teamAName || "Team A"),
+      teamBName: String(teamBName || "Team B"),
+      teamAColor: String(teamAColor || "#60A5FA"),
+      teamBColor: String(teamBColor || "#F59E0B"),
+      teamAPlayers: finalAPlayers,
+      teamBPlayers: finalBPlayers,
+      playersPerTeam: pCount,
+      maxOvers,
+      bowlerMaxOvers: bmo,
+      joker: jokerCfg,
+      rules,
+    });
 
-  match.umpireKey = umpireKey;
-  match.umpireSocketId = null; // lock to a single active umpire socket
+    match.umpireKey = umpireKey;
+    match.umpireSocketId = null; // lock to a single active umpire socket
 
-  matches.set(code, match);
-  res.json({ code, match: publicMatch(match), umpireKey });
+    await createMatch(match);
+    res.json({ code, match: publicMatch(match), umpireKey });
+  } catch (e) {
+    next(e);
+  }
 });
 
-app.get("/api/matches/:code", (req, res, next) => {
+app.get("/api/matches/:code", async (req, res, next) => {
   try {
-    const match = mustGetMatch(String(req.params.code || "").toUpperCase());
+    const match = await mustGetMatch(String(req.params.code || "").toUpperCase());
     res.json({ match: publicMatch(match) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+app.get("/api/data/matches", async (req, res, next) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const rows = await listRecentMatchSummariesForApi(limit);
+    res.json(rows);
   } catch (e) {
     next(e);
   }
@@ -166,13 +210,17 @@ app.use((err, req, res, next) => {
 });
 
 io.on("connection", (socket) => {
-  socket.on("match:join", ({ code, role, key }) => {
+  socket.on("match:join", async ({ code, role, key }) => {
     const c = String(code || "").toUpperCase();
-    if (!matches.has(c)) {
+    if (!(await hasMatch(c))) {
       socket.emit("match:error", { message: "Match not found." });
       return;
     }
-    const match = matches.get(c);
+    const match = await getMatch(c);
+    if (!match) {
+      socket.emit("match:error", { message: "Match not found." });
+      return;
+    }
     const r = role === "umpire" ? "umpire" : "spectator";
 
     if (r === "umpire") {
@@ -180,6 +228,14 @@ io.on("connection", (socket) => {
         socket.emit("match:error", { message: "Umpire access denied." });
         return;
       }
+    }
+
+    // Register role and room before any await so control events (e.g. selectPlayers) are authorized immediately.
+    socket.data.code = c;
+    socket.data.role = r;
+    socket.join(`match:${c}`);
+
+    if (r === "umpire") {
       if (match.umpireSocketId && match.umpireSocketId !== socket.id) {
         // Seamless handoff: same key can take over (prevents navigation races between pages).
         const prev = io.sockets.sockets.get(match.umpireSocketId);
@@ -190,30 +246,27 @@ io.on("connection", (socket) => {
         }
       }
       match.umpireSocketId = socket.id;
-      matches.set(c, match);
+      await saveMatch(match);
     }
 
-    socket.data.code = c;
-    socket.data.role = r;
-    socket.join(`match:${c}`);
-    socket.emit("match:update", publicMatch(matches.get(c)));
+    socket.emit("match:update", publicMatch(match));
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     const c = socket.data.code;
     if (!c) return;
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) return;
     if (match.umpireSocketId === socket.id) {
       match.umpireSocketId = null;
-      matches.set(c, match);
-      emitMatch(c);
+      await saveMatch(match);
+      emitMatch(c, match);
     }
   });
 
-  socket.on("match:setupTeams", ({ code, battingTeam }) => {
+  socket.on("match:setupTeams", async ({ code, battingTeam }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       return;
@@ -226,13 +279,13 @@ io.on("connection", (socket) => {
     const bt = battingTeam === "B" ? "B" : "A";
     match.battingTeam = bt;
     match.bowlingTeam = bt === "A" ? "B" : "A";
-    matches.set(c, match);
-    emitMatch(c);
+    await saveMatch(match);
+    emitMatch(c, match);
   });
 
-  socket.on("match:startInnings1", ({ code }, ack) => {
+  socket.on("match:startInnings1", async ({ code }, ack) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
@@ -243,29 +296,39 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
     }
-    matches.set(c, startFirstInnings(match));
-    emitMatch(c);
+    const next = startFirstInnings(match);
+    await saveMatch(next);
+    emitMatch(c, next);
     if (typeof ack === "function") ack({ ok: true });
   });
 
-  socket.on("match:startInnings2", ({ code }) => {
+  socket.on("match:startInnings2", async ({ code }, ack) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
+      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
     if (socket.data.role !== "umpire") {
       socket.emit("match:error", { message: "Only umpire can control the match." });
+      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
     }
-    matches.set(c, startSecondInnings(match));
-    emitMatch(c);
+    const next = startSecondInnings(match);
+    if (next?.errors?.length) {
+      socket.emit("match:error", { message: next.errors[0] || "Failed to start innings 2." });
+      if (typeof ack === "function") ack({ ok: false, error: next.errors[0] || "Failed to start innings 2." });
+      return;
+    }
+    await saveMatch(next);
+    emitMatch(c, next);
+    if (typeof ack === "function") ack({ ok: true });
   });
 
-  socket.on("match:startSuperOver", ({ code }) => {
+  socket.on("match:startSuperOver", async ({ code }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       return;
@@ -275,35 +338,62 @@ io.on("connection", (socket) => {
       return;
     }
     const next = startSuperOver(match);
-    matches.set(c, next);
-    emitMatch(c);
+    await saveMatch(next);
+    emitMatch(c, next);
   });
 
-  socket.on("match:selectPlayers", ({ code, strikerId, nonStrikerId, bowlerId }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
+  socket.on("match:selectPlayers", async ({ code, strikerId, nonStrikerId, bowlerId }, ack) => {
+    try {
+      const c = String(code || socket.data.code || "").toUpperCase();
+      const match = await getMatch(c);
+      if (!match) {
+        socket.emit("match:error", { message: "Match not found." });
+        if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
+        return;
+      }
+      if (socket.data.role !== "umpire") {
+        socket.emit("match:error", { message: "Only umpire can control the match." });
+        if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
+        return;
+      }
+      const s = strikerId ? String(strikerId).trim() : "";
+      const n = nonStrikerId ? String(nonStrikerId).trim() : "";
+      const b = bowlerId ? String(bowlerId).trim() : "";
+      if (s && n && s === n) {
+        socket.emit("match:error", { message: "Striker and non-striker cannot be the same player." });
+        if (typeof ack === "function") ack({ ok: false, error: "Striker and non-striker cannot be the same player." });
+        return;
+      }
+      if (!match.current || typeof match.current !== "object") {
+        match.current = newInningsState();
+      }
+      if (b && !bowlerHasQuotaRemaining(match, b)) {
+        const lim = match.settings?.bowlerMaxOvers;
+        socket.emit("match:error", {
+          message:
+            Number.isFinite(Number(lim)) && Number(lim) > 0
+              ? `That bowler has already bowled ${lim} overs (maximum for this match).`
+              : "That bowler cannot bowl (quota reached).",
+        });
+        if (typeof ack === "function") ack({ ok: false, error: "Bowler over quota." });
+        return;
+      }
+      match.current.strikerId = s || null;
+      match.current.nonStrikerId = n || null;
+      match.current.bowlerId = b || null;
+      await saveMatch(match);
+      emitMatch(c, match);
+      if (typeof ack === "function") ack({ ok: true });
+    } catch (e) {
+      const msg = e?.message || "Failed to select players.";
+      socket.emit("match:error", { message: msg });
+      if (typeof ack === "function") ack({ ok: false, error: msg });
     }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    if (strikerId && nonStrikerId && strikerId === nonStrikerId) {
-      socket.emit("match:error", { message: "Striker and non-striker cannot be the same player." });
-      return;
-    }
-    match.current.strikerId = strikerId || null;
-    match.current.nonStrikerId = nonStrikerId || null;
-    match.current.bowlerId = bowlerId || null;
-    matches.set(c, match);
-    emitMatch(c);
   });
 
-  socket.on("match:ball", ({ code, action }) => {
+  socket.on("match:ball", async ({ code, action }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       return;
@@ -313,13 +403,13 @@ io.on("connection", (socket) => {
       return;
     }
     const next = applyBallWithUndo(match, action || {});
-    matches.set(c, next);
-    emitMatch(c);
+    await saveMatch(next);
+    emitMatch(c, next);
   });
 
-  socket.on("match:undo", ({ code }) => {
+  socket.on("match:undo", async ({ code }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       return;
@@ -329,13 +419,13 @@ io.on("connection", (socket) => {
       return;
     }
     const next = undoLastBall(match);
-    matches.set(c, next);
-    emitMatch(c);
+    await saveMatch(next);
+    emitMatch(c, next);
   });
 
-  socket.on("match:toss", ({ code, call, result, decision }, ack) => {
+  socket.on("match:toss", async ({ code, call, result, decision }, ack) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = matches.get(c);
+    const match = await getMatch(c);
     if (!match) {
       socket.emit("match:error", { message: "Match not found." });
       if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
@@ -372,14 +462,42 @@ io.on("connection", (socket) => {
     match.battingTeam = winnerBats ? winnerTeam : winnerTeam === "A" ? "B" : "A";
     match.bowlingTeam = match.battingTeam === "A" ? "B" : "A";
 
-    matches.set(c, match);
-    emitMatch(c);
+    await saveMatch(match);
+    emitMatch(c, match);
     if (typeof ack === "function") ack({ ok: true, winnerTeam, battingTeam: match.battingTeam, bowlingTeam: match.bowlingTeam });
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
-  console.log(`CORS origin: ${CLIENT_ORIGIN}`);
+async function start() {
+  try {
+    await initMongo();
+  } catch (e) {
+    console.warn("Mongo init failed; using in-memory store.", e?.message || e);
+  }
+
+  server.once("error", (err) => {
+    if (err?.code === "EADDRINUSE") {
+      console.error(
+        `[server] Port ${PORT} is already in use. Stop the other process (e.g. another nodemon tab) or set PORT in server/.env.`
+      );
+      process.exit(1);
+      return;
+    }
+    console.error("[server] listen error:", err?.message || err);
+    process.exit(1);
+  });
+
+  server.listen(PORT, () => {
+    console.log(`Server listening on http://localhost:${PORT}`);
+    console.log(`CORS origin: ${CLIENT_ORIGIN}`);
+  });
+}
+
+start();
+
+process.on("SIGINT", async () => {
+  await closeMongo();
+  process.exit(0);
 });
+
 

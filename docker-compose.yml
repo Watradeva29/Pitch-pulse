@@ -1,0 +1,13 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: pitchpulse-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - pitchpulse_mongo_data:/data/db
+
+volumes:
+  pitchpulse_mongo_data:
+

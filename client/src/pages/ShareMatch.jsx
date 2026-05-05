@@ -18,7 +18,7 @@ export default function ShareMatch() {
 
   const umpireLink = useMemo(() => {
     const base = window.location.origin;
-    return `${base}${basePath}/match/${encodeURIComponent(matchCode)}/toss?key=${encodeURIComponent(key)}`;
+    return `${base}${basePath}/match/${encodeURIComponent(matchCode)}/umpire?key=${encodeURIComponent(key)}`;
   }, [matchCode, key, basePath]);
 
   return (

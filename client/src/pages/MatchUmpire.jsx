@@ -3,6 +3,9 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { createSocket } from "../lib/socket";
 import { getMatch } from "../lib/api";
 import { pickTextColor, withAlpha } from "../lib/colors";
+import MatchSummaryCard from "../components/MatchSummaryCard";
+import { exportElementToPng } from "../lib/export";
+import TeamSelect from "../components/TeamSelect";
 
 function toOversString(legalBalls) {
   const o = Math.floor((legalBalls || 0) / 6);
@@ -11,9 +14,10 @@ function toOversString(legalBalls) {
 }
 
 function findPlayerName(match, playerId) {
-  if (!match || !playerId) return "";
+  if (!match || playerId == null || playerId === "") return "";
+  const id = String(playerId);
   const all = [...(match.teams?.A?.players || []), ...(match.teams?.B?.players || [])];
-  return all.find((p) => p.id === playerId)?.name || "";
+  return all.find((p) => String(p.id) === id)?.name || "";
 }
 
 function sr(runs, balls) {
@@ -29,6 +33,17 @@ function econ(runsConceded, legalBalls) {
   return (Number(runsConceded || 0) / overs).toFixed(2);
 }
 
+function formatDuration(ms) {
+  const t = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const hh = String(h).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  const ss = String(s).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
 function ballLabel(b) {
   if (!b) return "•";
   if (b.kind === "run") return String(b.runs);
@@ -38,14 +53,61 @@ function ballLabel(b) {
   return "•";
 }
 
+function bubbleStyleForBall(b, batColor) {
+  const base = {
+    marginRight: 6,
+    background: "rgba(255,255,255,0.06)",
+    color: "rgba(255,255,255,0.90)",
+    borderColor: "rgba(255,255,255,0.16)",
+    minWidth: 44,
+    justifyContent: "center",
+    fontWeight: 900,
+  };
+
+  if (!b) return base;
+
+  if (b.kind === "wicket") {
+    return {
+      ...base,
+      background: "rgba(239,68,68,0.14)",
+      borderColor: "rgba(239,68,68,0.55)",
+      color: "rgba(255,255,255,0.92)",
+    };
+  }
+
+  if (b.kind === "run" && (Number(b.runs) === 4 || Number(b.runs) === 6)) {
+    return {
+      ...base,
+      background: withAlpha(batColor, 0.18),
+      borderColor: withAlpha(batColor, 0.55),
+      color: pickTextColor(batColor),
+    };
+  }
+
+  return base;
+}
+
 function thisOverDeliveries(current) {
   const deliveries = Array.isArray(current?.deliveries) ? current.deliveries : [];
   const legalBalls = Number(current?.legalBalls || 0);
   const ballInOver = Number(current?.ballInOver || 0);
   const overs = Number(current?.overs || 0);
-  const overIndex = legalBalls > 0 && ballInOver === 0 ? Math.max(0, overs - 1) : overs;
+  const betweenOvers =
+    Number(current?.legalBalls || 0) > 0 &&
+    Number(current?.ballInOver || 0) === 0 &&
+    !current?.bowlerId;
+
+  // If we're between overs (bowlerId cleared), show the completed over.
+  // If a new bowler is already selected, show the current over (empty until first ball).
+  const overIndex = betweenOvers ? Math.max(0, overs - 1) : overs;
   const list = deliveries.filter((d) => Number(d?.over) === overIndex);
   return { overIndex, list };
+}
+
+function overRuns(current, overIndex) {
+  const deliveries = Array.isArray(current?.deliveries) ? current.deliveries : [];
+  const list = deliveries.filter((d) => Number(d?.over) === Number(overIndex));
+  return list.reduce((sum, d) => sum + Number(d?.runs || 0) + Number(d?.extras?.wide || 0) + Number(d?.extras?.noBall || 0), 0);
 }
 
 export default function MatchUmpire() {
@@ -58,12 +120,11 @@ export default function MatchUmpire() {
   const [match, setMatch] = useState(null);
   const [err, setErr] = useState("");
   const [connected, setConnected] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   const socket = useMemo(() => createSocket(), []);
 
-  const strikerRef = useRef(null);
-  const nonStrikerRef = useRef(null);
-  const bowlerRef = useRef(null);
+  const summaryRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -114,10 +175,12 @@ export default function MatchUmpire() {
   const aText = pickTextColor(aColor);
   const bText = pickTextColor(bColor);
 
-  const [showSetup, setShowSetup] = useState(false);
   const [wicketOpen, setWicketOpen] = useState(false);
   const [wicketHowOut, setWicketHowOut] = useState("Bowled");
   const [wicketNextBatterId, setWicketNextBatterId] = useState("");
+  const [wicketOutPlayerId, setWicketOutPlayerId] = useState("");
+  const [wicketFielderId, setWicketFielderId] = useState("");
+  const [wicketRunsCompleted, setWicketRunsCompleted] = useState(0);
   const [newBowlerId, setNewBowlerId] = useState("");
   const [pendingStriker, setPendingStriker] = useState("");
   const [pendingNonStriker, setPendingNonStriker] = useState("");
@@ -137,6 +200,11 @@ export default function MatchUmpire() {
     match?.status === "tie" ||
     (match?.innings === 2 && match?.current?.completed);
 
+  const innings1Summary =
+    match?.innings === 1
+      ? match?.current
+      : match?.previous;
+
   useEffect(() => {
     setPendingStriker(current?.strikerId || "");
     setPendingNonStriker(current?.nonStrikerId || "");
@@ -144,16 +212,20 @@ export default function MatchUmpire() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchCode, current?.strikerId, current?.nonStrikerId, current?.bowlerId]);
 
-  const needsInitialSelection =
+  /** Before any ball: must choose striker, non-striker, bowler (innings 1 or start of innings 2). */
+  const needsPickOpeners =
     match?.status === "live" &&
     !match?.current?.completed &&
     Number(match?.current?.legalBalls || 0) === 0 &&
     (!match?.current?.strikerId || !match?.current?.nonStrikerId || !match?.current?.bowlerId);
 
+  const needsStartInnings2 =
+    match?.status === "live" && match?.innings === 1 && !!match?.current?.completed;
+
   useEffect(() => {
-    // Only show the full selection panel at the start of an innings.
-    setShowSetup(needsInitialSelection);
-  }, [needsInitialSelection]);
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!match) {
     return (
@@ -193,6 +265,11 @@ export default function MatchUmpire() {
         }
       : null;
 
+  const rr =
+    current?.legalBalls ? ((Number(current?.runs || 0) * 6) / Number(current.legalBalls || 1)).toFixed(2) : "—";
+  const rrr =
+    chase && chase.ballsLeft > 0 ? ((Number(chase.runsNeeded || 0) * 6) / Number(chase.ballsLeft || 1)).toFixed(2) : null;
+
   const strikerStats = current?.strikerId ? current?.batting?.[current.strikerId] : null;
   const nonStrikerStats = current?.nonStrikerId ? current?.batting?.[current.nonStrikerId] : null;
   const bowlerStats = current?.bowlerId ? current?.bowling?.[current.bowlerId] : null;
@@ -206,8 +283,34 @@ export default function MatchUmpire() {
   const wicketCandidates = availableBatters.filter((p) => p.id !== current?.strikerId && p.id !== current?.nonStrikerId);
 
   const { overIndex: displayOverIndex, list: overList } = thisOverDeliveries(current);
+  const betweenOvers =
+    Number(current?.legalBalls || 0) > 0 &&
+    Number(current?.ballInOver || 0) === 0 &&
+    !current?.bowlerId;
+  const lastOverRuns = betweenOvers ? overRuns(current, displayOverIndex) : null;
 
-  const eligibleBowlers = (bowlingPlayers || []).filter((p) => p.id && p.id !== current?.lastOverBowlerId);
+  const bowlerQuotaBalls = (() => {
+    const m = Number(match?.settings?.bowlerMaxOvers);
+    if (!Number.isFinite(m) || m <= 0) return Infinity;
+    return Math.floor(m) * 6;
+  })();
+  const bowlersUnderQuota = (bowlingPlayers || []).filter((p) => {
+    if (!p.id) return false;
+    const lb = Number(current?.bowling?.[p.id]?.legalBalls || 0);
+    return lb < bowlerQuotaBalls;
+  });
+  const eligibleBowlers = bowlersUnderQuota.filter((p) => p.id !== current?.lastOverBowlerId);
+
+  const battingTeam = match?.teams?.[match?.battingTeam];
+  const bowlingTeam = match?.teams?.[match?.bowlingTeam];
+  const batColor = battingTeam?.color || "#60A5FA";
+  const bowlColor = bowlingTeam?.color || "#F59E0B";
+
+  const elapsed = match?.createdAt ? formatDuration(now - Number(match.createdAt || 0)) : "00:00:00";
+  const clock = new Date(now).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const lastOutId = match?.lastBall?.kind === "wicket" ? match?.lastBall?.wicket?.outPlayerId : null;
+  const strikerWasOut = !!lastOutId && lastOutId === current?.strikerId;
+  const nonStrikerWasOut = !!lastOutId && lastOutId === current?.nonStrikerId;
 
   function hapticTick() {
     try {
@@ -225,20 +328,37 @@ export default function MatchUmpire() {
   }
 
   function openWicket() {
-    setWicketHowOut("Bowled");
+    const forceRunOut = !!current?.freeHit;
+    setWicketHowOut(forceRunOut ? "Run out" : "Bowled");
     setWicketNextBatterId("");
+    setWicketOutPlayerId(current?.strikerId || "");
+    setWicketFielderId("");
+    setWicketRunsCompleted(0);
     setWicketOpen(true);
   }
 
   function applyPlayersSelection() {
-    const strikerId = String(strikerRef.current?.value || "").trim();
-    const nonStrikerId = String(nonStrikerRef.current?.value || "").trim();
-    const bowlerId = String(bowlerRef.current?.value || "").trim();
-    if (strikerId && nonStrikerId && strikerId === nonStrikerId) {
+    const strikerId = String(pendingStriker || "").trim();
+    const nonStrikerId = String(pendingNonStriker || "").trim();
+    const bowlerId = String(pendingBowler || "").trim();
+    if (!strikerId || !nonStrikerId || !bowlerId) {
+      setErr("Select striker, non-striker, and bowler.");
+      return;
+    }
+    if (strikerId === nonStrikerId) {
       setErr("Striker and non-striker cannot be the same player.");
       return;
     }
-    socket.emit("match:selectPlayers", { code: match.matchId, strikerId, nonStrikerId, bowlerId });
+    setErr("");
+    socket.timeout(4000).emit("match:selectPlayers", { code: match.matchId, strikerId, nonStrikerId, bowlerId }, (err, res) => {
+      if (err) {
+        setErr("Could not reach server. Check connection and try again.");
+        return;
+      }
+      if (res && res.ok === false) {
+        setErr(res.error || "Could not apply line-up.");
+      }
+    });
   }
 
   return (
@@ -266,17 +386,23 @@ export default function MatchUmpire() {
 
       {isMatchOver ? (
         <div className="row" style={{ marginTop: 16 }}>
-          <div className="card" style={{ flex: "1 1 100%" }}>
-            <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 900 }}>Match over</div>
-                <div className="muted" style={{ marginTop: 4 }}>
-                  Open the full match summary and downloads.
-                </div>
-              </div>
-              <button className="primary" onClick={() => nav(`/match/${encodeURIComponent(match.matchId)}/scorecard`)}>
-                Match summary
+          <div style={{ flex: "1 1 100%" }}>
+            <MatchSummaryCard ref={summaryRef} match={match} />
+            <div className="btnRow" style={{ marginTop: 10 }}>
+              <button
+                className="primary"
+                onClick={async () => {
+                  try {
+                    setErr("");
+                    await exportElementToPng(summaryRef.current, `pitch-pulse-${match.matchId}-summary`);
+                  } catch (e) {
+                    setErr(e?.message || "Failed to export summary PNG.");
+                  }
+                }}
+              >
+                Download Summary PNG
               </button>
+              <button onClick={() => nav(`/match/${encodeURIComponent(match.matchId)}/scorecard`)}>Open full scorecard</button>
             </div>
           </div>
         </div>
@@ -324,53 +450,122 @@ export default function MatchUmpire() {
               width: "100%",
               maxWidth: 520,
               borderRadius: 18,
-              background: "rgba(0,0,0,0.38)",
-              borderColor: "rgba(255,255,255,0.18)",
+              background: "rgba(0,0,0,0.58)",
+              borderColor: "rgba(255,255,255,0.20)",
               boxShadow: "0 18px 60px rgba(0,0,0,0.55)",
             }}
             onClick={(e) => e.stopPropagation()}
           >
             <h2>Wicket</h2>
             <div className="muted" style={{ marginBottom: 10 }}>
-              Out: <b>{findPlayerName(match, current?.strikerId) || "—"}</b>
+              Select the dismissal details below.
             </div>
+
+            {current?.freeHit ? (
+              <div className="pill" style={{ borderColor: "rgba(96,165,250,0.45)", background: "rgba(96,165,250,0.12)" }}>
+                Free Hit: only{" "}
+                <b style={{ marginLeft: 2, marginRight: 2 }}>Run out</b>{" "}
+                is allowed
+              </div>
+            ) : null}
 
             <div className="grid2">
               <div>
-                <label>How out</label>
-                <select value={wicketHowOut} onChange={(e) => setWicketHowOut(e.target.value)}>
-                  <option>Bowled</option>
-                  <option>Caught</option>
-                  <option>LBW</option>
-                  <option>Run out</option>
-                  <option>Stumped</option>
-                  <option>Hit wicket</option>
-                </select>
+                <TeamSelect
+                  label="Out batter"
+                  value={wicketOutPlayerId}
+                  onChange={setWicketOutPlayerId}
+                  options={[
+                    { value: current?.strikerId || "", label: findPlayerName(match, current?.strikerId) || "Striker" },
+                    { value: current?.nonStrikerId || "", label: findPlayerName(match, current?.nonStrikerId) || "Non-striker" },
+                  ].filter((o) => o.value)}
+                  placeholder="Select"
+                  accentColor={batColor}
+                  panelColor={bowlColor}
+                  fieldStyle="neutral"
+                  disabled={!connected}
+                />
               </div>
               <div>
-                <label>Next batter</label>
-                <select value={wicketNextBatterId} onChange={(e) => setWicketNextBatterId(e.target.value)}>
-                  <option value="">Select</option>
-                  {wicketCandidates.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                </select>
+                <TeamSelect
+                  label="How out"
+                  value={wicketHowOut}
+                  onChange={setWicketHowOut}
+                  options={["Bowled", "Caught", "LBW", "Run out", "Stumped", "Hit wicket"].map((x) => ({ value: x, label: x }))}
+                  placeholder="Select"
+                  accentColor={bowlColor}
+                  panelColor={bowlColor}
+                  fieldStyle="neutral"
+                  disabled={!connected || !!current?.freeHit}
+                />
               </div>
+              <div>
+                <TeamSelect
+                  label="Next batter"
+                  value={wicketNextBatterId}
+                  onChange={setWicketNextBatterId}
+                  options={wicketCandidates.map((p) => ({ value: p.id, label: p.name }))}
+                  placeholder="Select"
+                  accentColor={batColor}
+                  panelColor={bowlColor}
+                  fieldStyle="neutral"
+                  disabled={!connected}
+                />
+              </div>
+              {wicketHowOut === "Caught" || wicketHowOut === "Run out" ? (
+                <div>
+                  <TeamSelect
+                    label={wicketHowOut === "Caught" ? "Caught by" : "Run out by"}
+                    value={wicketFielderId}
+                    onChange={setWicketFielderId}
+                    options={bowlingPlayers.map((p) => ({ value: p.id, label: p.name }))}
+                    placeholder="Select"
+                    accentColor={bowlColor}
+                    panelColor={batColor}
+                    fieldStyle="neutral"
+                    disabled={!connected}
+                  />
+                </div>
+              ) : null}
             </div>
+
+            {wicketHowOut === "Run out" ? (
+              <div style={{ marginTop: 10 }}>
+                <label>Runs completed (0–4)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={4}
+                  value={wicketRunsCompleted}
+                  onChange={(e) => setWicketRunsCompleted(Number(e.target.value || 0))}
+                />
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  Use this when they were running and got out after completing runs (e.g. 1 + W).
+                </div>
+              </div>
+            ) : null}
 
             <div className="btnRow" style={{ marginTop: 12, justifyContent: "space-between" }}>
               <button onClick={() => setWicketOpen(false)}>Cancel</button>
               <button
                 className="bad"
-                disabled={!connected || (!wicketNextBatterId && wicketCandidates.length > 0)}
+                disabled={
+                  !connected ||
+                  (!wicketNextBatterId && wicketCandidates.length > 0) ||
+                  !wicketOutPlayerId ||
+                  ((wicketHowOut === "Caught" || wicketHowOut === "Run out") && !wicketFielderId) ||
+                  (current?.freeHit && wicketHowOut !== "Run out")
+                }
                 onClick={() => {
                   setWicketOpen(false);
                   sendBall({
                     kind: "wicket",
                     howOut: wicketHowOut,
-                    outPlayerId: current?.strikerId,
+                    wicketKind: wicketHowOut,
+                    outPlayerId: wicketOutPlayerId || current?.strikerId,
+                    fielderId:
+                      wicketHowOut === "Caught" || wicketHowOut === "Run out" ? wicketFielderId : null,
+                    runsCompleted: wicketHowOut === "Run out" ? Math.max(0, Math.min(4, Number(wicketRunsCompleted || 0))) : 0,
                     nextBatterId: wicketNextBatterId || null,
                   });
                 }}
@@ -396,34 +591,47 @@ export default function MatchUmpire() {
           }}
           onClick={() => {}}
         >
-          <div className="card" style={{ width: "100%", maxWidth: 520, borderRadius: 18 }} onClick={(e) => e.stopPropagation()}>
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              borderRadius: 18,
+              background: `linear-gradient(180deg, ${withAlpha(bowlColor, 0.14)} 0%, rgba(255,255,255,0.03) 100%)`,
+              borderColor: withAlpha(bowlColor, 0.28),
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <h2>New over — select bowler</h2>
             <div className="muted" style={{ marginBottom: 10 }}>
               Over <b className="mono">{displayOverIndex + 1}</b> completed. Pick the next bowler to continue.
             </div>
             <div>
-              <label>Bowler</label>
-              <select value={newBowlerId} onChange={(e) => setNewBowlerId(e.target.value)}>
-                <option value="">Select</option>
-                {eligibleBowlers.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              <TeamSelect
+                label="Bowler"
+                value={newBowlerId}
+                onChange={setNewBowlerId}
+                options={eligibleBowlers.map((p) => ({ value: p.id, label: p.name }))}
+                placeholder="Select"
+                accentColor={bowlColor}
+              />
               {current?.lastOverBowlerId ? (
                 <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
                   Previous over: <b>{findPlayerName(match, current.lastOverBowlerId) || "—"}</b> (not selectable)
+                </div>
+              ) : null}
+              {eligibleBowlers.length === 0 ? (
+                <div className="error" style={{ marginTop: 10 }}>
+                  No bowlers available: everyone has reached the {match?.settings?.bowlerMaxOvers ?? "—"} overs cap, or only the previous over bowler is left.
                 </div>
               ) : null}
             </div>
             <div className="btnRow" style={{ marginTop: 12, justifyContent: "flex-end" }}>
               <button
                 className="primary"
-                disabled={!connected || !newBowlerId}
+                disabled={!connected || !newBowlerId || eligibleBowlers.length === 0}
                 onClick={() => {
                   hapticTick();
-                  setShowSetup(true);
                   socket.emit("match:selectPlayers", {
                     code: match.matchId,
                     strikerId: current?.strikerId,
@@ -439,64 +647,46 @@ export default function MatchUmpire() {
         </div>
       ) : null}
 
+      {/* Score box (keep only this + score entry controls) */}
       <div className="row" style={{ marginTop: 16 }}>
-        <div
-          className="card"
-          style={{
-            flex: "1 1 100%",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-          }}
-        >
-          <div className="muted" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <span
-              className="pill"
-              style={{
-                borderColor: withAlpha(aColor, 0.5),
-                background: withAlpha(aColor, 0.18),
-                color: aText,
-              }}
-            >
-              {match.teams.A.name}
-            </span>
-            <span
-              className="pill"
-              style={{
-                borderColor: withAlpha(bColor, 0.5),
-                background: withAlpha(bColor, 0.18),
-                color: bText,
-              }}
-            >
-              {match.teams.B.name}
-            </span>
-            {match?.settings?.joker?.enabled ? (
+        <div className="card" style={{ flex: "1 1 100%" }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div className="muted" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span className="pill">{match?.superOver?.active ? "Super Over" : `Innings ${match.innings}`}</span>
               <span
                 className="pill"
                 style={{
-                  borderColor: "rgba(255,255,255,0.16)",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "rgba(255,255,255,0.85)",
+                  borderColor: withAlpha(batColor, 0.5),
+                  background: withAlpha(batColor, 0.14),
+                  color: pickTextColor(batColor),
                 }}
               >
-                Joker: {match.settings.joker.name}
+                Batting: {battingTeam?.name || "—"}
               </span>
-            ) : null}
-          </div>
-        </div>
-      </div>
+              <span
+                className="pill"
+                style={{
+                  borderColor: withAlpha(bowlColor, 0.5),
+                  background: withAlpha(bowlColor, 0.14),
+                  color: pickTextColor(bowlColor),
+                }}
+              >
+                Bowling: {bowlingTeam?.name || "—"}
+              </span>
+              {match?.settings?.joker?.enabled ? <span className="pill">Joker: {match.settings.joker.name}</span> : null}
+              {Number.isFinite(Number(match?.settings?.bowlerMaxOvers)) && Number(match?.settings?.bowlerMaxOvers) > 0 ? (
+                <span className="pill">Bowler cap: {match.settings.bowlerMaxOvers} ov/inn</span>
+              ) : null}
+            </div>
 
-      <div className="row" style={{ marginTop: 16 }}>
-        <div className="card" style={{ flex: "1 1 100%" }}>
-          <div className="muted" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <span className="pill">{match?.superOver?.active ? "Super Over" : `Innings ${match.innings}`}</span>
-            <span className="pill" style={{ borderColor: match.teams?.[match.battingTeam]?.color || "var(--border)" }}>
-              Batting: {match.teams?.[match.battingTeam]?.name || "—"}
-            </span>
-            <span className="pill" style={{ borderColor: match.teams?.[match.bowlingTeam]?.color || "var(--border)" }}>
-              Bowling: {match.teams?.[match.bowlingTeam]?.name || "—"}
-            </span>
+            <div className="muted" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span className="pill">
+                Elapsed <b className="mono">{elapsed}</b>
+              </span>
+              <span className="pill">
+                Time <b className="mono">{clock}</b>
+              </span>
+            </div>
           </div>
 
           <div className="row" style={{ marginTop: 10, justifyContent: "space-between", alignItems: "baseline" }}>
@@ -514,188 +704,311 @@ export default function MatchUmpire() {
                 ) : null}
               </div>
             </div>
-            {needsInitialSelection ? (
-              <span className="pill" style={{ borderColor: "rgba(96,165,250,0.35)" }}>
-                Pick openers + bowler
+            {needsPickOpeners ? (
+              <span className="pill" style={{ borderColor: withAlpha(batColor, 0.55) }}>
+                Select openers + bowler
               </span>
             ) : null}
           </div>
 
           {chase ? (
             <div className="muted" style={{ marginTop: 8 }}>
-              Need <b className="mono">{chase.runsNeeded}</b> from <b className="mono">{chase.ballsLeft}</b> balls
+              Need <b className="mono">{chase.runsNeeded}</b> from <b className="mono">{chase.ballsLeft}</b> balls · Req RR{" "}
+              <b className="mono">{rrr ?? "—"}</b> · RR <b className="mono">{rr}</b>
             </div>
           ) : null}
 
-          <div className="muted" style={{ marginTop: 10 }}>
-            Striker <b>{findPlayerName(match, current?.strikerId) || "—"}</b> · Non <b>{findPlayerName(match, current?.nonStrikerId) || "—"}</b> · Bowler{" "}
-            <b>{findPlayerName(match, current?.bowlerId) || "—"}</b>
-          </div>
-
-          <div className="row" style={{ marginTop: 10 }}>
-            <div className="card" style={{ flex: "1 1 100%", padding: 12, background: "rgba(0,0,0,0.18)" }}>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-                This over (Over <b className="mono">{displayOverIndex + 1}</b>)
+          {needsPickOpeners ? (
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 12, fontWeight: 800 }}>
+                Choose striker, non-striker, and bowler, then Apply.
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {overList.length ? (
-                  overList.map((b, idx) => (
+              <div className="grid2">
+                <div>
+                  <TeamSelect
+                    label="Striker"
+                    value={pendingStriker}
+                    onChange={setPendingStriker}
+                    options={battingPlayers
+                      .filter((p) => !pendingNonStriker || String(p.id) !== String(pendingNonStriker))
+                      .map((p) => ({ value: p.id, label: p.name }))}
+                    placeholder="Select"
+                    accentColor={batColor}
+                    disabled={!connected}
+                  />
+                </div>
+                <div>
+                  <TeamSelect
+                    label="Non-striker"
+                    value={pendingNonStriker}
+                    onChange={setPendingNonStriker}
+                    options={battingPlayers
+                      .filter((p) => !pendingStriker || String(p.id) !== String(pendingStriker))
+                      .map((p) => ({ value: p.id, label: p.name }))}
+                    placeholder="Select"
+                    accentColor={batColor}
+                    disabled={!connected}
+                  />
+                </div>
+                <div>
+                  <TeamSelect
+                    label="Bowler"
+                    value={pendingBowler}
+                    onChange={setPendingBowler}
+                    options={bowlersUnderQuota.map((p) => ({ value: p.id, label: p.name }))}
+                    placeholder="Select"
+                    accentColor={bowlColor}
+                    disabled={!connected}
+                  />
+                </div>
+                <div style={{ display: "flex", alignItems: "end" }}>
+                  <button
+                    className="primary"
+                    disabled={
+                      !connected ||
+                      !pendingStriker ||
+                      !pendingNonStriker ||
+                      !pendingBowler
+                    }
+                    onClick={applyPlayersSelection}
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+              {bowlersUnderQuota.length === 0 ? (
+                <div className="error" style={{ marginTop: 12 }}>
+                  No bowlers are left under the {match?.settings?.bowlerMaxOvers ?? "—"} overs-per-bowler limit. Increase the limit in a new match or end the innings.
+                </div>
+              ) : null}
+            </div>
+          ) : (
+          <div className="row" style={{ marginTop: 12 }}>
+            <div
+              className="card"
+              style={{
+                flex: "1 1 420px",
+                padding: 12,
+                background: withAlpha(batColor, 0.10),
+                borderColor: withAlpha(batColor, 0.28),
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  marginBottom: 8,
+                  color: withAlpha(batColor, 0.95),
+                  fontWeight: 900,
+                  letterSpacing: 0.2,
+                  textShadow: "0 1px 2px rgba(0,0,0,0.88), 0 0 1px rgba(0,0,0,0.6)",
+                }}
+              >
+                Batters
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {/* Striker row */}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 10px",
+                    borderRadius: 14,
+                    border: `1px solid ${withAlpha(batColor, 0.22)}`,
+                    background: `linear-gradient(90deg, ${withAlpha(batColor, 0.18)} 0%, rgba(0,0,0,0.12) 65%)`,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                     <span
-                      key={`${b.t || idx}-${idx}`}
-                      className="pill"
+                      title="On strike"
                       style={{
-                        borderColor:
-                          b.kind === "wicket"
-                            ? "rgba(239,68,68,0.55)"
-                            : b.kind === "wide" || b.kind === "noBall"
-                              ? "rgba(96,165,250,0.55)"
-                              : "rgba(255,255,255,0.16)",
-                        background: "rgba(255,255,255,0.06)",
-                        color: "rgba(255,255,255,0.85)",
-                        minWidth: 44,
-                        justifyContent: "center",
+                        width: 18,
+                        height: 18,
+                        borderRadius: 6,
+                        display: "grid",
+                        placeItems: "center",
+                        border: "1px solid rgba(255,255,255,0.18)",
+                        background: "rgba(0,0,0,0.20)",
+                        color: "rgba(255,255,255,0.92)",
+                        flex: "0 0 auto",
+                        lineHeight: 0,
                       }}
-                      title={b.freeHit ? "Free hit" : ""}
                     >
-                      {ballLabel(b)}
+                      <span style={{ fontSize: 12, fontWeight: 1000 }}>▶</span>
                     </span>
-                  ))
+                    <div
+                      style={{
+                        fontWeight: 1000,
+                        letterSpacing: 0.2,
+                        fontSize: 22,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        color: strikerWasOut ? "rgba(239,68,68,0.92)" : "rgba(255,255,255,0.92)",
+                      }}
+                    >
+                      {findPlayerName(match, current?.strikerId) || "—"}
+                      {strikerWasOut ? <span className="pill" style={{ marginLeft: 10, borderColor: "rgba(239,68,68,0.55)" }}>W</span> : null}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 12, flex: "0 0 auto" }}>
+                    <div className="mono" style={{ fontWeight: 1000, fontSize: 34, letterSpacing: -0.6 }}>
+                      {strikerStats?.runs ?? 0}
+                    </div>
+                    <div className="mono" style={{ fontWeight: 900, fontSize: 18, opacity: 0.85 }}>
+                      {strikerStats ? String(strikerStats.balls ?? 0) : "0"}
+                    </div>
+                    <div className="mono" style={{ fontWeight: 900, fontSize: 14, opacity: 0.82 }}>
+                      SR {strikerStats ? sr(strikerStats.runs, strikerStats.balls) : "—"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Non-striker row */}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 10px",
+                    borderRadius: 14,
+                    border: "1px solid rgba(255,255,255,0.10)",
+                    background: "rgba(0,0,0,0.12)",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontWeight: 1000,
+                      letterSpacing: 0.2,
+                      fontSize: 22,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: nonStrikerWasOut ? "rgba(239,68,68,0.92)" : "rgba(255,255,255,0.92)",
+                      minWidth: 0,
+                    }}
+                  >
+                    {findPlayerName(match, current?.nonStrikerId) || "—"}
+                    {nonStrikerWasOut ? <span className="pill" style={{ marginLeft: 10, borderColor: "rgba(239,68,68,0.55)" }}>W</span> : null}
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 12, flex: "0 0 auto" }}>
+                    <div className="mono" style={{ fontWeight: 1000, fontSize: 34, letterSpacing: -0.6 }}>
+                      {nonStrikerStats?.runs ?? 0}
+                    </div>
+                    <div className="mono" style={{ fontWeight: 900, fontSize: 18, opacity: 0.85 }}>
+                      {nonStrikerStats ? String(nonStrikerStats.balls ?? 0) : "0"}
+                    </div>
+                    <div className="mono" style={{ fontWeight: 900, fontSize: 14, opacity: 0.82 }}>
+                      SR {nonStrikerStats ? sr(nonStrikerStats.runs, nonStrikerStats.balls) : "—"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className="card"
+              style={{
+                flex: "1 1 420px",
+                padding: 12,
+                background: withAlpha(bowlColor, 0.10),
+                borderColor: withAlpha(bowlColor, 0.28),
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  marginBottom: 8,
+                  color: withAlpha(bowlColor, 0.95),
+                  fontWeight: 900,
+                  letterSpacing: 0.2,
+                  textShadow: "0 1px 2px rgba(0,0,0,0.88), 0 0 1px rgba(0,0,0,0.6)",
+                }}
+              >
+                Bowler
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 900 }}>{findPlayerName(match, current?.bowlerId) || "—"}</div>
+                <div className="mono" style={{ fontWeight: 1000 }}>
+                  {toOversString(bowlerStats?.legalBalls || 0)} · {bowlerStats?.runsConceded ?? 0}R · {bowlerStats?.wickets ?? 0}W · Econ{" "}
+                  {econ(bowlerStats?.runsConceded ?? 0, bowlerStats?.legalBalls ?? 0)}
+                </div>
+              </div>
+              <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                {betweenOvers ? (
+                  <>
+                    Last over: <b className="mono">{displayOverIndex + 1}</b> ·{" "}
+                    <b className="mono">{lastOverRuns ?? 0}</b> runs
+                  </>
                 ) : (
-                  <span className="muted">—</span>
+                  <>
+                    This over: <b className="mono">{displayOverIndex + 1}</b>{" "}
+                    {overList.length ? (
+                      <span style={{ marginLeft: 8 }}>
+                        {overList.map((b, idx) => (
+                          <span key={`${b.t || idx}-${idx}`} className="pill" style={bubbleStyleForBall(b, batColor)}>
+                            {ballLabel(b)}
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </>
                 )}
               </div>
             </div>
           </div>
-
-          <div className="row" style={{ marginTop: 10 }}>
-            <div className="card" style={{ flex: "1 1 320px", padding: 12, background: "rgba(0,0,0,0.18)" }}>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-                Batting (live)
-              </div>
-              <div className="kv">
-                <div>
-                  <div className="k">Striker</div>
-                  <div className="v">
-                    {strikerStats ? (
-                      <span className="mono">
-                        {strikerStats.runs}/{strikerStats.balls} · SR {sr(strikerStats.runs, strikerStats.balls)}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="k">Non-striker</div>
-                  <div className="v">
-                    {nonStrikerStats ? (
-                      <span className="mono">
-                        {nonStrikerStats.runs}/{nonStrikerStats.balls} · SR {sr(nonStrikerStats.runs, nonStrikerStats.balls)}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="card" style={{ flex: "1 1 320px", padding: 12, background: "rgba(0,0,0,0.18)" }}>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-                Bowling (current)
-              </div>
-              <div className="kv">
-                <div>
-                  <div className="k">O</div>
-                  <div className="v mono">{toOversString(bowlerStats?.legalBalls || 0)}</div>
-                </div>
-                <div>
-                  <div className="k">R</div>
-                  <div className="v mono">{bowlerStats?.runsConceded ?? 0}</div>
-                </div>
-                <div>
-                  <div className="k">W</div>
-                  <div className="v mono">{bowlerStats?.wickets ?? 0}</div>
-                </div>
-                <div>
-                  <div className="k">Econ</div>
-                  <div className="v mono">{econ(bowlerStats?.runsConceded ?? 0, bowlerStats?.legalBalls ?? 0)}</div>
-                </div>
-                <div>
-                  <div className="k">Wd/Nb</div>
-                  <div className="v mono">
-                    {(bowlerStats?.wides ?? 0)}/{(bowlerStats?.noBalls ?? 0)}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {showSetup ? (
+      {needsStartInnings2 ? (
         <div className="row" style={{ marginTop: 12 }}>
           <div className="card" style={{ flex: "1 1 100%" }}>
-            <div className="btnRow tight" style={{ marginBottom: 10 }}>
-              {match?.innings === 1 && match?.current?.completed ? (
-                <button className="good" disabled={!connected} onClick={() => socket.emit("match:startInnings2", { code: match.matchId })}>
-                  Start innings 2
-                </button>
-              ) : (
-                <div className="muted" style={{ fontSize: 12 }}>
-                  Innings and teams are auto-set from the toss. Start innings 2 appears after innings 1 ends.
-                </div>
-              )}
+            <div className="btnRow tight" style={{ marginBottom: 10, justifyContent: "flex-start" }}>
+              <button
+                className="good"
+                disabled={!connected}
+                onClick={() => {
+                  setErr("");
+                  socket.timeout(2500).emit("match:startInnings2", { code: match.matchId }, (err, res) => {
+                    if (err) {
+                      setErr("Failed to start innings 2. Try again.");
+                      return;
+                    }
+                    if (res?.ok === false) {
+                      setErr(res.error || "Failed to start innings 2.");
+                    }
+                  });
+                }}
+              >
+                Start innings 2
+              </button>
             </div>
 
-            <div className="grid2">
-              <div>
-                <label>Striker</label>
-                <select value={pendingStriker} onChange={(e) => setPendingStriker(e.target.value)} ref={strikerRef}>
-                  <option value="">Select</option>
-                  {battingPlayers
-                    .filter((p) => !pendingNonStriker || p.id !== pendingNonStriker)
-                    .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+            {innings1Summary ? (
+              <div className="card" style={{ padding: 12, background: "rgba(0,0,0,0.18)", marginBottom: 12 }}>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Innings 1 complete
+                </div>
+                <div style={{ fontWeight: 900, marginTop: 6 }}>
+                  {match?.teams?.[match?.battingTeam]?.name || "Batting"}:{" "}
+                  <span className="mono">
+                    {innings1Summary.runs ?? 0}/{innings1Summary.wickets ?? 0} ({toOversString(innings1Summary.legalBalls || 0)})
+                  </span>
+                </div>
+                {match?.target != null ? (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Target for innings 2: <b>{match.target}</b>
+                  </div>
+                ) : null}
               </div>
-              <div>
-                <label>Non-striker</label>
-                <select value={pendingNonStriker} onChange={(e) => setPendingNonStriker(e.target.value)} ref={nonStrikerRef}>
-                  <option value="">Select</option>
-                  {battingPlayers
-                    .filter((p) => !pendingStriker || p.id !== pendingStriker)
-                    .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label>Bowler</label>
-                <select value={pendingBowler} onChange={(e) => setPendingBowler(e.target.value)} ref={bowlerRef}>
-                  <option value="">Select</option>
-                  {bowlingPlayers.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div style={{ display: "flex", alignItems: "end" }}>
-                <button
-                  className="primary"
-                  disabled={!connected}
-                  onClick={applyPlayersSelection}
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
+            ) : null}
           </div>
         </div>
       ) : null}

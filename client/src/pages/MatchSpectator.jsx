@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { createSocket } from "../lib/socket";
 import { getMatch } from "../lib/api";
 import { pickTextColor, withAlpha } from "../lib/colors";
 import ScorecardView from "../components/ScorecardView";
+import MatchSummaryCard from "../components/MatchSummaryCard";
+import { exportElementToPng } from "../lib/export";
 
 function toOversString(legalBalls) {
   const o = Math.floor((legalBalls || 0) / 6);
@@ -61,6 +63,36 @@ function thisOverDeliveries(current) {
   return { overIndex, list };
 }
 
+function computeInningsInsights(inn) {
+  const deliveries = Array.isArray(inn?.deliveries) ? inn.deliveries : [];
+  let total = 0;
+  let segRuns = 0;
+  let segBalls = 0;
+  const partnerships = [];
+  const fow = [];
+  let lastWicket = null;
+  const overBallLabel = (d) => `${Number(d?.over ?? 0)}.${Number(d?.ballInOver ?? 0) + 1}`;
+
+  for (const d of deliveries) {
+    const add = Number(d?.runs || 0) + Number(d?.extras?.wide || 0) + Number(d?.extras?.noBall || 0);
+    total += add;
+    segRuns += add;
+    if (d?.legal) segBalls += 1;
+    if (d?.kind === "wicket") {
+      const outId = d?.wicket?.outPlayerId;
+      fow.push({ score: total, outId, ov: overBallLabel(d) });
+      lastWicket = { score: total, outId, ov: overBallLabel(d) };
+      partnerships.push({ runs: segRuns, balls: segBalls });
+      segRuns = 0;
+      segBalls = 0;
+    }
+  }
+  if (segRuns > 0 || segBalls > 0) partnerships.push({ runs: segRuns, balls: segBalls });
+  const highest = [...partnerships].sort((a, b) => Number(b.runs || 0) - Number(a.runs || 0))[0] || { runs: 0, balls: 0 };
+  const current = partnerships.length ? partnerships[partnerships.length - 1] : { runs: 0, balls: 0 };
+  return { highest, current, lastWicket, fow: fow.slice(0, 10) };
+}
+
 export default function MatchSpectator() {
   const nav = useNavigate();
   const { code } = useParams();
@@ -73,6 +105,7 @@ export default function MatchSpectator() {
   const [tab, setTab] = useState("live"); // live | scorecard
 
   const socket = useMemo(() => createSocket(), []);
+  const summaryRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -119,6 +152,40 @@ export default function MatchSpectator() {
     };
   }, [socket, matchCode]);
 
+  useEffect(() => {
+    let timer = null;
+    let alive = true;
+
+    async function refresh() {
+      try {
+        const res = await getMatch(matchCode);
+        if (!alive) return;
+        setMatch(res.match);
+      } catch {
+        // ignore - socket may reconnect shortly
+      }
+    }
+
+    // Poll only when disconnected so spectators still see updates.
+    if (!connected) {
+      refresh();
+      timer = setInterval(refresh, 3000);
+    }
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVis);
+
+    return () => {
+      alive = false;
+      if (timer) clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [connected, matchCode]);
+
   const current = match?.current;
   const batTeamKey = match?.battingTeam;
   const bowlTeamKey = match?.bowlingTeam;
@@ -164,8 +231,80 @@ export default function MatchSpectator() {
     match?.status === "tie" ||
     (match?.innings === 2 && match?.current?.completed);
 
+  const inn1 = match?.previous || (match?.innings === 1 ? match?.current : null);
+  const inn2 = match?.current || null;
+  const inn1Insights = computeInningsInsights(inn1);
+  const inn2Insights = computeInningsInsights(inn2);
+
   return (
     <div className="container">
+      {isMatchOver ? (
+        <div className="row" style={{ marginBottom: 14 }}>
+          <div style={{ flex: "1 1 100%" }}>
+            <MatchSummaryCard ref={summaryRef} match={match} />
+            <div className="btnRow" style={{ marginTop: 10 }}>
+              <button
+                className="primary"
+                disabled={!match}
+                onClick={async () => {
+                  try {
+                    setErr("");
+                    await exportElementToPng(summaryRef.current, `pitch-pulse-${match?.matchId || matchCode}-summary`);
+                  } catch (e) {
+                    setErr(e?.message || "Failed to export summary PNG.");
+                  }
+                }}
+              >
+                Download Summary PNG
+              </button>
+              <button onClick={() => nav(`/match/${encodeURIComponent(matchCode)}/scorecard`)}>Open full scorecard</button>
+            </div>
+
+            <div className="row" style={{ marginTop: 12 }}>
+              <div className="card" style={{ flex: "1 1 360px", background: "rgba(0,0,0,0.18)" }}>
+                <div style={{ fontWeight: 900 }}>Partnerships</div>
+                <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  Innings 1 current: <b className="mono">{inn1Insights.current.runs}</b> ({inn1Insights.current.balls}b) · Highest:{" "}
+                  <b className="mono">{inn1Insights.highest.runs}</b> ({inn1Insights.highest.balls}b)
+                </div>
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  Innings 2 current: <b className="mono">{inn2Insights.current.runs}</b> ({inn2Insights.current.balls}b) · Highest:{" "}
+                  <b className="mono">{inn2Insights.highest.runs}</b> ({inn2Insights.highest.balls}b)
+                </div>
+                <div className="muted" style={{ marginTop: 10, fontSize: 12 }}>
+                  Innings 1 last wicket:{" "}
+                  {inn1Insights.lastWicket
+                    ? `${inn1Insights.lastWicket.score}-${findPlayerName(match, inn1Insights.lastWicket.outId) || "—"} (${inn1Insights.lastWicket.ov})`
+                    : "—"}
+                </div>
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  Innings 2 last wicket:{" "}
+                  {inn2Insights.lastWicket
+                    ? `${inn2Insights.lastWicket.score}-${findPlayerName(match, inn2Insights.lastWicket.outId) || "—"} (${inn2Insights.lastWicket.ov})`
+                    : "—"}
+                </div>
+              </div>
+
+              <div className="card" style={{ flex: "2 1 520px", background: "rgba(0,0,0,0.18)" }}>
+                <div style={{ fontWeight: 900 }}>Fall of wickets</div>
+                <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>
+                  Innings 1:{" "}
+                  {inn1Insights.fow.length
+                    ? inn1Insights.fow.map((x) => `${x.score}-${findPlayerName(match, x.outId) || "—"} (${x.ov})`).join(" · ")
+                    : "—"}
+                </div>
+                <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  Innings 2:{" "}
+                  {inn2Insights.fow.length
+                    ? inn2Insights.fow.map((x) => `${x.score}-${findPlayerName(match, x.outId) || "—"} (${x.ov})`).join(" · ")
+                    : "—"}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div
         className="card"
         style={{
@@ -204,6 +343,9 @@ export default function MatchSpectator() {
               </span>
               {match?.settings?.joker?.enabled ? (
                 <span className="pill">Joker: {match.settings.joker.name}</span>
+              ) : null}
+              {Number.isFinite(Number(match?.settings?.bowlerMaxOvers)) && Number(match?.settings?.bowlerMaxOvers) > 0 ? (
+                <span className="pill">Bowler cap: {match.settings.bowlerMaxOvers} ov/inn</span>
               ) : null}
             </div>
             <div style={{ display: "flex", gap: 14, alignItems: "baseline", marginTop: 10, flexWrap: "wrap" }}>

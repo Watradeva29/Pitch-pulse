@@ -2,6 +2,28 @@ function clone(obj) {
   return JSON.parse(JSON.stringify(obj));
 }
 
+function bowlerQuotaLegalBalls(match) {
+  const m = Number(match?.settings?.bowlerMaxOvers);
+  if (!Number.isFinite(m) || m <= 0) return Infinity;
+  return Math.floor(m) * 6;
+}
+
+function bowlerLegalBallsIncrementForAction(action, rules) {
+  if (action.kind === "run") return 1;
+  if (action.kind === "wide") return rules.wide.extraBall ? 0 : 1;
+  if (action.kind === "noBall") return rules.noBall.extraBall ? 0 : 1;
+  if (action.kind === "wicket") return 1;
+  return 0;
+}
+
+function bowlerHasQuotaRemaining(match, bowlerId) {
+  if (!bowlerId) return true;
+  const cap = bowlerQuotaLegalBalls(match);
+  if (!Number.isFinite(cap)) return true;
+  const lb = match.current?.bowling?.[bowlerId]?.legalBalls || 0;
+  return lb < cap;
+}
+
 function newMatchState({
   matchId,
   teamAName,
@@ -12,9 +34,15 @@ function newMatchState({
   teamBPlayers,
   playersPerTeam,
   maxOvers,
+  bowlerMaxOvers,
   joker,
   rules,
 }) {
+  const cap =
+    Number.isFinite(Number(bowlerMaxOvers)) && Number(bowlerMaxOvers) >= 1
+      ? Math.min(Math.floor(Number(bowlerMaxOvers)), maxOvers)
+      : Math.max(1, Math.min(Math.floor(maxOvers / 5), maxOvers));
+
   return {
     matchId,
     createdAt: Date.now(),
@@ -28,6 +56,7 @@ function newMatchState({
     settings: {
       playersPerTeam,
       maxOvers,
+      bowlerMaxOvers: cap,
       superOver: { maxOvers: 1, maxWickets: 2 },
       joker: joker?.enabled
         ? {
@@ -230,6 +259,18 @@ function applyBall(match, action) {
   ensureBattingPlayer(inn, inn.nonStrikerId);
   const bowler = ensureBowlingPlayer(inn, inn.bowlerId);
 
+  const capBalls = bowlerQuotaLegalBalls(next);
+  const legalInc = bowlerLegalBallsIncrementForAction(action, rules);
+  if (legalInc > 0 && bowler.legalBalls + legalInc > capBalls) {
+    const lim = next.settings.bowlerMaxOvers;
+    next.errors.push(
+      Number.isFinite(Number(lim)) && Number(lim) > 0
+        ? `This bowler is limited to ${lim} overs in this innings.`
+        : "Bowler cannot bowl more (quota reached)."
+    );
+    return next;
+  }
+
   const record = {
     t: Date.now(),
     innings: next.innings,
@@ -245,6 +286,17 @@ function applyBall(match, action) {
     over: Math.floor(inn.legalBalls / 6),
     ballInOver: inn.legalBalls % 6,
   };
+
+  function normalizeWicketKind() {
+    const raw = String(action?.wicketKind || action?.howOut || "").trim().toLowerCase();
+    if (raw === "run out" || raw === "runout" || raw === "run_out") return "run_out";
+    if (raw === "caught") return "caught";
+    if (raw === "bowled") return "bowled";
+    if (raw === "lbw") return "lbw";
+    if (raw === "stumped") return "stumped";
+    if (raw === "hit wicket" || raw === "hitwicket" || raw === "hit_wicket") return "hit_wicket";
+    return "other";
+  }
 
   if (action.kind === "run") {
     const r = Math.max(0, Math.min(6, Number(action.runs || 0)));
@@ -281,11 +333,23 @@ function applyBall(match, action) {
       bowler.legalBalls += 1;
     }
   } else if (action.kind === "wicket") {
-    // On free hit, wicket only allowed for run out (we'll keep simple: block wicket when freeHit true)
-    if (inn.freeHit) {
-      next.errors.push("Free hit: wicket not allowed (simplified).");
+    const wicketKind = normalizeWicketKind();
+    const fielderId = action?.fielderId || null;
+    const runsCompleted =
+      wicketKind === "run_out" ? Math.max(0, Math.min(4, Number(action?.runsCompleted || 0))) : 0;
+
+    // Free hit: only run out allowed (standard limited-overs behavior)
+    if (inn.freeHit && wicketKind !== "run_out") {
+      next.errors.push("Free hit: only run out is allowed.");
       return next;
     }
+
+    // Only require fielder for caught / run out. (Stumped attribution is optional in this app.)
+    if ((wicketKind === "caught" || wicketKind === "run_out") && !fielderId) {
+      next.errors.push("Select fielder for this wicket.");
+      return next;
+    }
+
     const outPlayerId = action.outPlayerId || inn.strikerId;
     const isStrikerOut = outPlayerId === inn.strikerId;
     const isNonStrikerOut = outPlayerId === inn.nonStrikerId;
@@ -294,13 +358,30 @@ function applyBall(match, action) {
       return next;
     }
     inn.wickets += 1;
-    bowler.wickets += 1;
+    const creditedToBowler = wicketKind !== "run_out";
+    if (creditedToBowler) bowler.wickets += 1;
     striker.balls += 1;
+
+    // Runs completed on the play (run out)
+    if (runsCompleted > 0) {
+      inn.runs += runsCompleted;
+      striker.runs += runsCompleted;
+      bowler.runsConceded += runsCompleted;
+      if (runsCompleted % 2 === 1) rotateStrike(inn);
+    }
 
     const outStats = ensureBattingPlayer(inn, outPlayerId);
     outStats.out = true;
     outStats.howOut = action.howOut || "W";
-    record.wicket = { outPlayerId, howOut: outStats.howOut };
+    record.wicket = {
+      outPlayerId,
+      howOut: outStats.howOut,
+      kind: wicketKind,
+      fielderId,
+      runsCompleted,
+      creditedToBowler,
+      bowlerId: record.bowlerId || null,
+    };
 
     // Replace dismissed batter with next batter if provided
     const nextBatterId = action.nextBatterId || null;
@@ -477,4 +558,6 @@ module.exports = {
   startSuperOver,
   computeChase,
   newInningsState,
+  bowlerHasQuotaRemaining,
+  bowlerQuotaLegalBalls,
 };
