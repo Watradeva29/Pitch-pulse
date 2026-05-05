@@ -2,7 +2,7 @@ const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const { nanoid } = require("nanoid");
+const { randomInt } = require("crypto");
 
 const {
   newMatchState,
@@ -37,18 +37,29 @@ const io = new Server(server, {
 // In-memory store: matchCode -> match object
 const matches = new Map();
 
+const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const ID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+
+function randomId(size, alphabet = ID_ALPHABET) {
+  let id = "";
+  for (let i = 0; i < size; i += 1) {
+    id += alphabet[randomInt(alphabet.length)];
+  }
+  return id;
+}
+
 function createCode() {
-  return nanoid(6).toUpperCase();
+  return randomId(6, CODE_ALPHABET);
 }
 
 function createUmpireKey() {
   // short but unguessable enough for local/EC2 single-instance MVP
-  return nanoid(24);
+  return randomId(24);
 }
 
 function pickPlayers(names) {
   return (names || []).map((name, idx) => ({
-    id: nanoid(8),
+    id: randomId(8),
     name: String(name || `Player ${idx + 1}`).trim(),
   }));
 }
@@ -59,7 +70,7 @@ function addJoker(teamAPlayers, teamBPlayers, joker) {
 
   const name = String(joker?.name || "Joker").trim() || "Joker";
   const team = joker?.team === "B" ? "B" : "A";
-  const player = { id: nanoid(8), name };
+  const player = { id: randomId(8), name };
 
   if (mode === "bothTeams") {
     return {
