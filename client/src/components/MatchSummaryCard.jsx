@@ -135,6 +135,14 @@ const MatchSummaryCard = forwardRef(function MatchSummaryCard({ match }, ref) {
   const base = match?.superOver?.base;
   const inn1 = base?.innings1 || match?.previous || (match?.innings === 1 ? match.current : null);
   const inn2 = base?.innings2 || (match?.innings >= 2 ? match.current : null);
+  const soActive = !!match?.superOver?.active;
+  const soInn1 = soActive ? (match.innings === 2 ? match.previous : match.current) : null;
+  const soInn2 = soActive && match.innings === 2 ? match.current : null;
+
+  const soInn1BatKey = soActive ? (match.innings === 2 ? match.bowlingTeam : match.battingTeam) : null;
+  const soInn1BowlKey = soActive ? (match.innings === 2 ? match.battingTeam : match.bowlingTeam) : null;
+  const soInn2BatKey = soActive && match.innings === 2 ? match.battingTeam : null;
+  const soInn2BowlKey = soActive && match.innings === 2 ? match.bowlingTeam : null;
 
   const inn1BatKey =
     teamKeyBattingForInnings(match, inn1) || (match.innings === 1 ? match.battingTeam : match.bowlingTeam);
@@ -217,6 +225,24 @@ const MatchSummaryCard = forwardRef(function MatchSummaryCard({ match }, ref) {
               textColor={inn2BlockText}
               allPlayers={allPlayers}
               inn={inn2}
+            />
+          ) : null}
+          {soInn1 ? (
+            <InningsBlock
+              label={`Super Over — ${match?.teams?.[soInn1BatKey]?.name || "Innings 1"}`}
+              color={(match?.teams?.[soInn1BatKey]?.color || "#60A5FA")}
+              textColor={pickTextColor(match?.teams?.[soInn1BatKey]?.color || "#60A5FA")}
+              allPlayers={allPlayers}
+              inn={soInn1}
+            />
+          ) : null}
+          {soInn2 ? (
+            <InningsBlock
+              label={`Super Over — ${match?.teams?.[soInn2BatKey]?.name || "Innings 2"}`}
+              color={(match?.teams?.[soInn2BatKey]?.color || "#F59E0B")}
+              textColor={pickTextColor(match?.teams?.[soInn2BatKey]?.color || "#F59E0B")}
+              allPlayers={allPlayers}
+              inn={soInn2}
             />
           ) : null}
         </div>

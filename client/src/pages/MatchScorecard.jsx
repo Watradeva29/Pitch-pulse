@@ -18,8 +18,10 @@ export default function MatchScorecard() {
 
   const socket = useMemo(() => createSocket(), []);
   const summaryRef = useRef(null);
-  const pdfPage1Ref = useRef(null);
-  const pdfPage2Ref = useRef(null);
+  const pdfMain1Ref = useRef(null);
+  const pdfMain2Ref = useRef(null);
+  const pdfSo1Ref = useRef(null);
+  const pdfSo2Ref = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -144,14 +146,14 @@ export default function MatchScorecard() {
                 onClick={async () => {
                   try {
                     setErr("");
-                    if (!pdfPage1Ref.current || !pdfPage2Ref.current) {
+                    const pageEls = [pdfMain1Ref.current, pdfMain2Ref.current, pdfSo1Ref.current, pdfSo2Ref.current].filter(Boolean);
+                    if (!pageEls.length) {
                       throw new Error("PDF pages are not ready yet. Please try again.");
                     }
 
                     const { default: jsPDF } = await import("jspdf");
                     const doc = new jsPDF({ unit: "pt", format: "a4" });
 
-                    const pageEls = [pdfPage1Ref.current, pdfPage2Ref.current].filter(Boolean);
                     for (let i = 0; i < pageEls.length; i += 1) {
                       const dataUrl = await renderElementToPngDataUrl(pageEls[i]);
                       if (i > 0) doc.addPage();
@@ -184,24 +186,50 @@ export default function MatchScorecard() {
           <div style={{ position: "absolute", left: -99999, top: 0, width: 1, height: 1, overflow: "hidden" }} aria-hidden="true">
             <div>
               <InningsPdfPage
-                ref={pdfPage1Ref}
+                ref={pdfMain1Ref}
                 match={match}
-                inningsLabel="Innings 1"
-                inn={match?.previous || (match?.innings === 1 ? match?.current : null)}
-                batTeamKey={match?.innings === 1 ? match?.battingTeam : match?.bowlingTeam}
-                bowlTeamKey={match?.innings === 1 ? match?.bowlingTeam : match?.battingTeam}
+                inningsLabel={match?.superOver?.active ? "Main match — Innings 1" : "Innings 1"}
+                inn={match?.superOver?.base?.innings1 || match?.previous || (match?.innings === 1 ? match?.current : null)}
+                batTeamKey={match?.superOver?.active ? match?.bowlingTeam : (match?.innings === 1 ? match?.battingTeam : match?.bowlingTeam)}
+                bowlTeamKey={match?.superOver?.active ? match?.battingTeam : (match?.innings === 1 ? match?.bowlingTeam : match?.battingTeam)}
               />
             </div>
             <div style={{ marginTop: 24 }}>
               <InningsPdfPage
-                ref={pdfPage2Ref}
+                ref={pdfMain2Ref}
                 match={match}
-                inningsLabel="Innings 2"
-                inn={match?.current}
-                batTeamKey={match?.battingTeam}
-                bowlTeamKey={match?.bowlingTeam}
+                inningsLabel={match?.superOver?.active ? "Main match — Innings 2" : "Innings 2"}
+                inn={match?.superOver?.base?.innings2 || (match?.innings === 2 ? match?.current : null)}
+                batTeamKey={match?.superOver?.active ? match?.battingTeam : match?.battingTeam}
+                bowlTeamKey={match?.superOver?.active ? match?.bowlingTeam : match?.bowlingTeam}
               />
             </div>
+            {match?.superOver?.active ? (
+              <>
+                <div style={{ marginTop: 24 }}>
+                  <InningsPdfPage
+                    ref={pdfSo1Ref}
+                    match={match}
+                    inningsLabel="Super Over — Innings 1"
+                    inn={match.innings === 2 ? match.previous : match.current}
+                    batTeamKey={match.innings === 2 ? match.bowlingTeam : match.battingTeam}
+                    bowlTeamKey={match.innings === 2 ? match.battingTeam : match.bowlingTeam}
+                  />
+                </div>
+                {match.innings === 2 ? (
+                  <div style={{ marginTop: 24 }}>
+                    <InningsPdfPage
+                      ref={pdfSo2Ref}
+                      match={match}
+                      inningsLabel="Super Over — Innings 2"
+                      inn={match.current}
+                      batTeamKey={match.battingTeam}
+                      bowlTeamKey={match.bowlingTeam}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
           <ScorecardView match={match} />
         </div>
