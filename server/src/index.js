@@ -28,6 +28,7 @@ const {
   hasMatch,
   listRecentMatchSummariesForApi,
 } = require("./store/matches");
+const { isUmpireForMatch } = require("./auth");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -277,7 +278,7 @@ io.on("connection", (socket) => {
       socket.emit("match:error", { message: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       return;
     }
@@ -297,7 +298,7 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
@@ -316,7 +317,7 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
@@ -339,7 +340,7 @@ io.on("connection", (socket) => {
       socket.emit("match:error", { message: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       return;
     }
@@ -357,7 +358,7 @@ io.on("connection", (socket) => {
         if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
         return;
       }
-      if (socket.data.role !== "umpire") {
+      if (!isUmpireForMatch(socket, c, match)) {
         socket.emit("match:error", { message: "Only umpire can control the match." });
         if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
         return;
@@ -404,7 +405,7 @@ io.on("connection", (socket) => {
       socket.emit("match:error", { message: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       return;
     }
@@ -420,7 +421,7 @@ io.on("connection", (socket) => {
       socket.emit("match:error", { message: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       return;
     }
@@ -437,7 +438,7 @@ io.on("connection", (socket) => {
       if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
       return;
     }
-    if (socket.data.role !== "umpire") {
+    if (!isUmpireForMatch(socket, c, match)) {
       socket.emit("match:error", { message: "Only umpire can control the match." });
       if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
       return;
