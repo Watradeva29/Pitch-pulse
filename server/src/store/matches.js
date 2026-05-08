@@ -12,6 +12,7 @@ const {
 let _client = null;
 let _db = null;
 let _col = null;
+const matchWriteLocks = new Map();
 
 function isMongoConfigured() {
   const uri = String(process.env.MONGODB_URI || "").trim();
@@ -217,6 +218,21 @@ async function hasMatch(code) {
   return !!doc;
 }
 
+function withMatchWriteLock(code, fn) {
+  const c = String(code || "").toUpperCase();
+  const previous = matchWriteLocks.get(c) || Promise.resolve();
+  const current = previous.catch(() => {}).then(fn);
+  const next = current
+    .catch(() => {})
+    .finally(() => {
+      if (matchWriteLocks.get(c) === next) {
+        matchWriteLocks.delete(c);
+      }
+    });
+  matchWriteLocks.set(c, next);
+  return current;
+}
+
 module.exports = {
   isMongoConfigured,
   initMongo,
@@ -227,4 +243,5 @@ module.exports = {
   saveMatch,
   hasMatch,
   listRecentMatchSummariesForApi,
+  withMatchWriteLock,
 };
