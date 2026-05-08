@@ -27,6 +27,7 @@ const {
   saveMatch,
   hasMatch,
   listRecentMatchSummariesForApi,
+  withMatchWriteLock,
 } = require("./store/matches");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
@@ -109,6 +110,10 @@ async function mustGetMatch(code) {
 function emitMatch(code, match) {
   if (!match) return;
   io.to(`match:${code}`).emit("match:update", publicMatch(match));
+}
+
+function emitSocketError(socket, err, fallback = "Server error.") {
+  socket.emit("match:error", { message: err?.message || fallback });
 }
 
 app.get("/api/health", async (req, res) => {
@@ -399,34 +404,46 @@ io.on("connection", (socket) => {
 
   socket.on("match:ball", async ({ code, action }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
+    try {
+      await withMatchWriteLock(c, async () => {
+        const match = await getMatch(c);
+        if (!match) {
+          socket.emit("match:error", { message: "Match not found." });
+          return;
+        }
+        if (socket.data.role !== "umpire") {
+          socket.emit("match:error", { message: "Only umpire can control the match." });
+          return;
+        }
+        const next = applyBallWithUndo(match, action || {});
+        await saveMatch(next);
+        emitMatch(c, next);
+      });
+    } catch (e) {
+      emitSocketError(socket, e, "Failed to score ball.");
     }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    const next = applyBallWithUndo(match, action || {});
-    await saveMatch(next);
-    emitMatch(c, next);
   });
 
   socket.on("match:undo", async ({ code }) => {
     const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
+    try {
+      await withMatchWriteLock(c, async () => {
+        const match = await getMatch(c);
+        if (!match) {
+          socket.emit("match:error", { message: "Match not found." });
+          return;
+        }
+        if (socket.data.role !== "umpire") {
+          socket.emit("match:error", { message: "Only umpire can control the match." });
+          return;
+        }
+        const next = undoLastBall(match);
+        await saveMatch(next);
+        emitMatch(c, next);
+      });
+    } catch (e) {
+      emitSocketError(socket, e, "Failed to undo ball.");
     }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    const next = undoLastBall(match);
-    await saveMatch(next);
-    emitMatch(c, next);
   });
 
   socket.on("match:toss", async ({ code, call, result, decision }, ack) => {
