@@ -28,6 +28,7 @@ const {
   hasMatch,
   listRecentMatchSummariesForApi,
 } = require("./store/matches");
+const { authorizeUmpireForJoinedMatch } = require("./socketAuth");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -109,6 +110,27 @@ async function mustGetMatch(code) {
 function emitMatch(code, match) {
   if (!match) return;
   io.to(`match:${code}`).emit("match:update", publicMatch(match));
+}
+
+function sendControlError(socket, ack, message) {
+  socket.emit("match:error", { message });
+  if (typeof ack === "function") ack({ ok: false, error: message });
+}
+
+async function getAuthorizedMatchForControl(socket, requestedCode, ack) {
+  const auth = authorizeUmpireForJoinedMatch(socket, requestedCode);
+  if (!auth.ok) {
+    sendControlError(socket, ack, auth.error);
+    return null;
+  }
+
+  const match = await getMatch(auth.code);
+  if (!match) {
+    sendControlError(socket, ack, "Match not found.");
+    return null;
+  }
+
+  return { code: auth.code, match };
 }
 
 app.get("/api/health", async (req, res) => {
@@ -271,16 +293,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:setupTeams", async ({ code, battingTeam }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
 
     const bt = battingTeam === "B" ? "B" : "A";
     match.battingTeam = bt;
@@ -290,18 +305,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:startInnings1", async ({ code }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code, ack);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
     const next = startFirstInnings(match);
     await saveMatch(next);
     emitMatch(c, next);
@@ -309,18 +315,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:startInnings2", async ({ code }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code, ack);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
     const next = startSecondInnings(match);
     if (next?.errors?.length) {
       socket.emit("match:error", { message: next.errors[0] || "Failed to start innings 2." });
@@ -333,16 +330,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:startSuperOver", async ({ code }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
     const next = startSuperOver(match);
     await saveMatch(next);
     emitMatch(c, next);
@@ -350,18 +340,9 @@ io.on("connection", (socket) => {
 
   socket.on("match:selectPlayers", async ({ code, strikerId, nonStrikerId, bowlerId }, ack) => {
     try {
-      const c = String(code || socket.data.code || "").toUpperCase();
-      const match = await getMatch(c);
-      if (!match) {
-        socket.emit("match:error", { message: "Match not found." });
-        if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-        return;
-      }
-      if (socket.data.role !== "umpire") {
-        socket.emit("match:error", { message: "Only umpire can control the match." });
-        if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-        return;
-      }
+      const authorized = await getAuthorizedMatchForControl(socket, code, ack);
+      if (!authorized) return;
+      const { code: c, match } = authorized;
       const s = strikerId ? String(strikerId).trim() : "";
       const n = nonStrikerId ? String(nonStrikerId).trim() : "";
       const b = bowlerId ? String(bowlerId).trim() : "";
@@ -398,50 +379,27 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:ball", async ({ code, action }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
     const next = applyBallWithUndo(match, action || {});
     await saveMatch(next);
     emitMatch(c, next);
   });
 
   socket.on("match:undo", async ({ code }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
     const next = undoLastBall(match);
     await saveMatch(next);
     emitMatch(c, next);
   });
 
   socket.on("match:toss", async ({ code, call, result, decision }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
+    const authorized = await getAuthorizedMatchForControl(socket, code, ack);
+    if (!authorized) return;
+    const { code: c, match } = authorized;
 
     // call: { team: "A"|"B", choice: "H"|"T" }
     // result: "H"|"T"
