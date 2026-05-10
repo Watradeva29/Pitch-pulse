@@ -27,7 +27,9 @@ const {
   saveMatch,
   hasMatch,
   listRecentMatchSummariesForApi,
+  withMatchWriteLock,
 } = require("./store/matches");
+const { authorizeUmpireForJoinedMatch } = require("./socketAuth");
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "http://localhost:5173";
@@ -109,6 +111,33 @@ async function mustGetMatch(code) {
 function emitMatch(code, match) {
   if (!match) return;
   io.to(`match:${code}`).emit("match:update", publicMatch(match));
+}
+
+function sendControlError(socket, ack, message) {
+  socket.emit("match:error", { message });
+  if (typeof ack === "function") ack({ ok: false, error: message });
+}
+
+async function withAuthorizedMatchForControl(socket, requestedCode, ack, fn) {
+  const auth = authorizeUmpireForJoinedMatch(socket, requestedCode);
+  if (!auth.ok) {
+    sendControlError(socket, ack, auth.error);
+    return null;
+  }
+
+  try {
+    return await withMatchWriteLock(auth.code, async () => {
+      const match = await getMatch(auth.code);
+      if (!match) {
+        sendControlError(socket, ack, "Match not found.");
+        return null;
+      }
+      return fn(auth.code, match);
+    });
+  } catch (e) {
+    sendControlError(socket, ack, e?.message || "Failed to update match.");
+    return null;
+  }
 }
 
 app.get("/api/health", async (req, res) => {
@@ -271,97 +300,48 @@ io.on("connection", (socket) => {
   });
 
   socket.on("match:setupTeams", async ({ code, battingTeam }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-
-    const bt = battingTeam === "B" ? "B" : "A";
-    match.battingTeam = bt;
-    match.bowlingTeam = bt === "A" ? "B" : "A";
-    await saveMatch(match);
-    emitMatch(c, match);
+    await withAuthorizedMatchForControl(socket, code, null, async (c, match) => {
+      const bt = battingTeam === "B" ? "B" : "A";
+      match.battingTeam = bt;
+      match.bowlingTeam = bt === "A" ? "B" : "A";
+      await saveMatch(match);
+      emitMatch(c, match);
+    });
   });
 
   socket.on("match:startInnings1", async ({ code }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
-    const next = startFirstInnings(match);
-    await saveMatch(next);
-    emitMatch(c, next);
-    if (typeof ack === "function") ack({ ok: true });
+    await withAuthorizedMatchForControl(socket, code, ack, async (c, match) => {
+      const next = startFirstInnings(match);
+      await saveMatch(next);
+      emitMatch(c, next);
+      if (typeof ack === "function") ack({ ok: true });
+    });
   });
 
   socket.on("match:startInnings2", async ({ code }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
-    const next = startSecondInnings(match);
-    if (next?.errors?.length) {
-      socket.emit("match:error", { message: next.errors[0] || "Failed to start innings 2." });
-      if (typeof ack === "function") ack({ ok: false, error: next.errors[0] || "Failed to start innings 2." });
-      return;
-    }
-    await saveMatch(next);
-    emitMatch(c, next);
-    if (typeof ack === "function") ack({ ok: true });
+    await withAuthorizedMatchForControl(socket, code, ack, async (c, match) => {
+      const next = startSecondInnings(match);
+      if (next?.errors?.length) {
+        socket.emit("match:error", { message: next.errors[0] || "Failed to start innings 2." });
+        if (typeof ack === "function") ack({ ok: false, error: next.errors[0] || "Failed to start innings 2." });
+        return;
+      }
+      await saveMatch(next);
+      emitMatch(c, next);
+      if (typeof ack === "function") ack({ ok: true });
+    });
   });
 
   socket.on("match:startSuperOver", async ({ code }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    const next = startSuperOver(match);
-    await saveMatch(next);
-    emitMatch(c, next);
+    await withAuthorizedMatchForControl(socket, code, null, async (c, match) => {
+      const next = startSuperOver(match);
+      await saveMatch(next);
+      emitMatch(c, next);
+    });
   });
 
   socket.on("match:selectPlayers", async ({ code, strikerId, nonStrikerId, bowlerId }, ack) => {
-    try {
-      const c = String(code || socket.data.code || "").toUpperCase();
-      const match = await getMatch(c);
-      if (!match) {
-        socket.emit("match:error", { message: "Match not found." });
-        if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-        return;
-      }
-      if (socket.data.role !== "umpire") {
-        socket.emit("match:error", { message: "Only umpire can control the match." });
-        if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-        return;
-      }
+    await withAuthorizedMatchForControl(socket, code, ack, async (c, match) => {
       const s = strikerId ? String(strikerId).trim() : "";
       const n = nonStrikerId ? String(nonStrikerId).trim() : "";
       const b = bowlerId ? String(bowlerId).trim() : "";
@@ -390,87 +370,56 @@ io.on("connection", (socket) => {
       await saveMatch(match);
       emitMatch(c, match);
       if (typeof ack === "function") ack({ ok: true });
-    } catch (e) {
-      const msg = e?.message || "Failed to select players.";
-      socket.emit("match:error", { message: msg });
-      if (typeof ack === "function") ack({ ok: false, error: msg });
-    }
+    });
   });
 
   socket.on("match:ball", async ({ code, action }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    const next = applyBallWithUndo(match, action || {});
-    await saveMatch(next);
-    emitMatch(c, next);
+    await withAuthorizedMatchForControl(socket, code, null, async (c, match) => {
+      const next = applyBallWithUndo(match, action || {});
+      await saveMatch(next);
+      emitMatch(c, next);
+    });
   });
 
   socket.on("match:undo", async ({ code }) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      return;
-    }
-    const next = undoLastBall(match);
-    await saveMatch(next);
-    emitMatch(c, next);
+    await withAuthorizedMatchForControl(socket, code, null, async (c, match) => {
+      const next = undoLastBall(match);
+      await saveMatch(next);
+      emitMatch(c, next);
+    });
   });
 
   socket.on("match:toss", async ({ code, call, result, decision }, ack) => {
-    const c = String(code || socket.data.code || "").toUpperCase();
-    const match = await getMatch(c);
-    if (!match) {
-      socket.emit("match:error", { message: "Match not found." });
-      if (typeof ack === "function") ack({ ok: false, error: "Match not found." });
-      return;
-    }
-    if (socket.data.role !== "umpire") {
-      socket.emit("match:error", { message: "Only umpire can control the match." });
-      if (typeof ack === "function") ack({ ok: false, error: "Only umpire can control the match." });
-      return;
-    }
+    await withAuthorizedMatchForControl(socket, code, ack, async (c, match) => {
+      // call: { team: "A"|"B", choice: "H"|"T" }
+      // result: "H"|"T"
+      // decision: "bat"|"bowl"
+      const r = result === "T" ? "T" : "H";
+      const winnerTeam =
+        call?.choice && call.choice.toUpperCase() === r
+          ? call.team === "B"
+            ? "B"
+            : "A"
+          : call?.team === "B"
+            ? "A"
+            : "B";
 
-    // call: { team: "A"|"B", choice: "H"|"T" }
-    // result: "H"|"T"
-    // decision: "bat"|"bowl"
-    const r = result === "T" ? "T" : "H";
-    const winnerTeam =
-      call?.choice && call.choice.toUpperCase() === r
-        ? call.team === "B"
-          ? "B"
-          : "A"
-        : call?.team === "B"
-          ? "A"
-          : "B";
+      match.toss = {
+        winner: winnerTeam,
+        decision: decision === "bowl" ? "bowl" : "bat",
+        overridden: false,
+        call: { team: call?.team === "B" ? "B" : "A", choice: call?.choice === "T" ? "T" : "H" },
+        result: r,
+      };
 
-    match.toss = {
-      winner: winnerTeam,
-      decision: decision === "bowl" ? "bowl" : "bat",
-      overridden: false,
-      call: { team: call?.team === "B" ? "B" : "A", choice: call?.choice === "T" ? "T" : "H" },
-      result: r,
-    };
+      const winnerBats = match.toss.decision === "bat";
+      match.battingTeam = winnerBats ? winnerTeam : winnerTeam === "A" ? "B" : "A";
+      match.bowlingTeam = match.battingTeam === "A" ? "B" : "A";
 
-    const winnerBats = match.toss.decision === "bat";
-    match.battingTeam = winnerBats ? winnerTeam : winnerTeam === "A" ? "B" : "A";
-    match.bowlingTeam = match.battingTeam === "A" ? "B" : "A";
-
-    await saveMatch(match);
-    emitMatch(c, match);
-    if (typeof ack === "function") ack({ ok: true, winnerTeam, battingTeam: match.battingTeam, bowlingTeam: match.bowlingTeam });
+      await saveMatch(match);
+      emitMatch(c, match);
+      if (typeof ack === "function") ack({ ok: true, winnerTeam, battingTeam: match.battingTeam, bowlingTeam: match.bowlingTeam });
+    });
   });
 });
 
