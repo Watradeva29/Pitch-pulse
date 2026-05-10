@@ -21,7 +21,7 @@ test("serializes writes for the same match code", async () => {
     return "second";
   });
 
-  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(events, ["first:start"]);
 
   releaseFirst();
